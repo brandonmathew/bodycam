@@ -11,6 +11,7 @@
 // Default process: Bodycam-Win64-Shipping.exe
 
 #include <Windows.h>
+#include <intrin.h>
 #include <winhttp.h>
 #include <tlhelp32.h>
 #include <commctrl.h>
@@ -283,6 +284,126 @@ static bool LoadRemoteLibrary(HANDLE Process, DWORD Pid, const char* DllName)
 }
 
 // ---------------------------------------------------------------------------
+// API-set resolution
+//
+// Names like api-ms-win-crt-heap-l1-1-0.dll are not real files. The Windows
+// loader translates them through the API-set schema (a map stored in every
+// process's PEB) to a host DLL - every api-ms-win-crt-* contract is hosted
+// by ucrtbase.dll. Xenos/BlackBone's user-mode manual mapper does the same
+// translation (NameResolve) before resolving an import; without it a
+// manual map tries to literally load the contract name and fails.
+// ---------------------------------------------------------------------------
+
+struct ApiSetValueEntry
+{
+    ULONG Flags;
+    ULONG NameOffset;
+    ULONG NameLength;
+    ULONG ValueOffset;
+    ULONG ValueLength;
+};
+
+struct ApiSetValueArray
+{
+    ULONG Flags;
+    ULONG NameOffset;
+    ULONG Unk;
+    ULONG NameLength;
+    ULONG DataOffset;
+    ULONG Count;
+};
+
+struct ApiSetNamespaceEntry
+{
+    ULONG Limit;
+    ULONG Size;
+};
+
+struct ApiSetNamespaceArray
+{
+    ULONG Version;
+    ULONG Size;
+    ULONG Flags;
+    ULONG Count;
+    ULONG Start;
+    ULONG End;
+    ULONG Unk[2];
+};
+
+static bool IsApiSetName(const char* Name)
+{
+    return _strnicmp(Name, "api-ms-", 7) == 0 || _strnicmp(Name, "ext-ms-", 7) == 0;
+}
+
+static std::wstring SchemaString(const BYTE* MapBase, ULONG Offset, ULONG LengthBytes)
+{
+    return std::wstring(reinterpret_cast<const wchar_t*>(MapBase + Offset), LengthBytes / sizeof(wchar_t));
+}
+
+static std::wstring ToWideLower(const char* Text)
+{
+    std::wstring Wide;
+    for (const char* p = Text; *p; p++)
+        Wide.push_back(towlower(static_cast<unsigned char>(*p)));
+    return Wide;
+}
+
+// Host DLL for an API-set contract, or "" if the schema has no answer.
+static std::string ResolveApiSetHost(const char* ApiSetName, const char* ImporterName)
+{
+    // The schema lives in this process's PEB and is the same system-wide.
+    const BYTE* Peb = reinterpret_cast<const BYTE*>(__readgsqword(0x60));
+    const auto* Map = *reinterpret_cast<const ApiSetNamespaceArray* const*>(Peb + 0x68);
+    if (!Map || Map->Version != 6)
+        return "";
+
+    const BYTE* Base = reinterpret_cast<const BYTE*>(Map);
+
+    std::wstring Query = ToWideLower(ApiSetName);
+    if (Query.size() > 4 && Query.compare(Query.size() - 4, 4, L".dll") == 0)
+        Query.resize(Query.size() - 4);
+    const std::wstring Importer = ToWideLower(ImporterName);
+
+    for (ULONG i = 0; i < Map->Count; i++)
+    {
+        const auto* Entry = reinterpret_cast<const ApiSetNamespaceEntry*>(Base + Map->End + i * sizeof(ApiSetNamespaceEntry));
+        const auto* Values = reinterpret_cast<const ApiSetValueArray*>(Base + Map->Start + Entry->Size * sizeof(ApiSetValueArray));
+
+        std::wstring Name = SchemaString(Base, Values->NameOffset, Values->NameLength);
+        for (auto& c : Name)
+            c = towlower(c);
+        if (Name != Query)
+            continue;
+
+        // Pick the host meant for this importer; the entry with no name is
+        // the default that applies to everyone else.
+        std::string DefaultHost;
+        for (ULONG j = 0; j < Values->Count; j++)
+        {
+            const auto* Host = reinterpret_cast<const ApiSetValueEntry*>(Base + Values->DataOffset + j * sizeof(ApiSetValueEntry));
+            if (Host->ValueLength == 0)
+                continue;
+
+            const std::wstring HostName = SchemaString(Base, Host->ValueOffset, Host->ValueLength);
+            std::string Narrow;
+            for (wchar_t c : HostName)
+                Narrow.push_back(static_cast<char>(c));
+
+            std::wstring ForImporter = SchemaString(Base, Host->NameOffset, Host->NameLength);
+            for (auto& c : ForImporter)
+                c = towlower(c);
+
+            if (!ForImporter.empty() && ForImporter == Importer)
+                return Narrow;
+            if (ForImporter.empty() && DefaultHost.empty())
+                DefaultHost = Narrow;
+        }
+        return DefaultHost;
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
 // Manual map
 // ---------------------------------------------------------------------------
 
@@ -402,6 +523,23 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
         for (; Descriptor->Name != 0; Descriptor++)
         {
             const char* DllName = reinterpret_cast<const char*>(Image.data() + Descriptor->Name);
+
+            // API-set contracts resolve to their host DLL before anything
+            // tries to find or load them by name.
+            std::string HostName;
+            if (IsApiSetName(DllName))
+            {
+                HostName = ResolveApiSetHost(DllName, "bodycam.dll");
+                if (HostName.empty() && _strnicmp(DllName, "api-ms-win-crt-", 15) == 0)
+                    HostName = "ucrtbase.dll";
+                if (HostName.empty())
+                {
+                    Log(L"Could not resolve API-set %hs.", DllName);
+                    return false;
+                }
+                Log(L"API-set %hs -> %hs", DllName, HostName.c_str());
+                DllName = HostName.c_str();
+            }
 
             ULONGLONG RemoteModule = GetRemoteModuleBase(Pid, DllName);
             if (RemoteModule == 0)
@@ -732,9 +870,6 @@ int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, wchar_t*, int ShowCmd)
 
     ShowWindow(g_Window, ShowCmd);
     UpdateWindow(g_Window);
-
-    Log(L"Ready. The loader does nothing until you press Inject.");
-    Log(L"It will download the latest bodycam.dll into memory and inject it - no file is saved to disk.");
 
     MSG Msg = {};
     while (GetMessageW(&Msg, nullptr, 0, 0) > 0)
