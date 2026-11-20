@@ -1,20 +1,24 @@
 // Bodycam loader
 //
-// Downloads the latest bodycam.dll from the GitHub release straight into
+// A small window. It does nothing on its own - when you press Inject it
+// downloads the latest bodycam.dll from the GitHub release straight into
 // memory (nothing is ever written to disk) and manual-maps it into the
 // game: sections copied, relocations applied, imports resolved against
 // the modules loaded in the game, then the TLS callbacks and DllMain are
 // called in the target process.
 //
-// Usage: loader.exe [process.exe] [download url]
-// Defaults: Bodycam.exe and the rolling "latest" release of the repo.
+// Usage: loader.exe [process.exe]
+// Default process: Bodycam-Win64-Shipping.exe
 
 #include <Windows.h>
 #include <winhttp.h>
 #include <tlhelp32.h>
+#include <commctrl.h>
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -22,6 +26,49 @@
 
 static const char* DefaultProcess = "Bodycam-Win64-Shipping.exe";
 static const wchar_t* DefaultUrl = L"https://github.com/brandonmathew/bodycam/releases/download/latest/bodycam.dll";
+
+static std::string g_ProcessName = DefaultProcess;
+
+static HWND g_Window = nullptr;
+static HWND g_StatusText = nullptr;
+static HWND g_InjectButton = nullptr;
+static HWND g_LogEdit = nullptr;
+static bool g_Busy = false;
+static DWORD g_GamePid = 0;
+
+static constexpr UINT WM_LOG_LINE = WM_APP + 1;
+static constexpr UINT WM_INJECT_DONE = WM_APP + 2;
+static constexpr int IDC_INJECT = 1001;
+static constexpr int IDC_STATUS = 1002;
+static constexpr int IDC_LOG = 1003;
+
+// ---------------------------------------------------------------------------
+// Log - safe to call from any thread; the line is appended on the UI thread.
+// ---------------------------------------------------------------------------
+
+static void Log(const wchar_t* Format, ...)
+{
+    wchar_t Buffer[1024];
+    va_list Args;
+    va_start(Args, Format);
+    vswprintf(Buffer, _countof(Buffer), Format, Args);
+    va_end(Args);
+
+    auto* Line = new std::wstring(Buffer);
+    if (g_Window && IsWindow(g_Window))
+        PostMessageW(g_Window, WM_LOG_LINE, 0, reinterpret_cast<LPARAM>(Line));
+    else
+        delete Line;
+}
+
+static void AppendLogLine(const wchar_t* Line)
+{
+    const int Length = GetWindowTextLengthW(g_LogEdit);
+    SendMessageW(g_LogEdit, EM_SETSEL, Length, Length);
+    SendMessageW(g_LogEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(Line));
+    SendMessageW(g_LogEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L"\r\n"));
+    SendMessageW(g_LogEdit, EM_SCROLLCARET, 0, 0);
+}
 
 // ---------------------------------------------------------------------------
 // Download
@@ -99,7 +146,7 @@ static bool DownloadToMemory(const wchar_t* Url, std::vector<BYTE>& Out)
             }
             else
             {
-                printf("Download failed: HTTP %lu\n", Status);
+                Log(L"Download failed: HTTP %lu", Status);
             }
         }
 
@@ -116,26 +163,36 @@ Done:
 // Process helpers
 // ---------------------------------------------------------------------------
 
+static std::wstring ToWide(const std::string& Text)
+{
+    std::wstring Wide;
+    for (char c : Text)
+        Wide.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+    return Wide;
+}
+
 static DWORD FindProcessId(const char* ProcessName)
 {
+    const std::wstring WideName = ToWide(ProcessName);
+
     HANDLE Snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (Snapshot == INVALID_HANDLE_VALUE)
         return 0;
 
-    PROCESSENTRY32 Entry = {};
+    PROCESSENTRY32W Entry = {};
     Entry.dwSize = sizeof(Entry);
 
     DWORD Pid = 0;
-    if (Process32First(Snapshot, &Entry))
+    if (Process32FirstW(Snapshot, &Entry))
     {
         do
         {
-            if (_stricmp(Entry.szExeFile, ProcessName) == 0)
+            if (_wcsicmp(Entry.szExeFile, WideName.c_str()) == 0)
             {
                 Pid = Entry.th32ProcessID;
                 break;
             }
-        } while (Process32Next(Snapshot, &Entry));
+        } while (Process32NextW(Snapshot, &Entry));
     }
 
     CloseHandle(Snapshot);
@@ -145,24 +202,26 @@ static DWORD FindProcessId(const char* ProcessName)
 // Base address of a module inside the target process, 0 if not loaded there.
 static ULONGLONG GetRemoteModuleBase(DWORD Pid, const char* ModuleName)
 {
+    const std::wstring WideName = ToWide(ModuleName);
+
     HANDLE Snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, Pid);
     if (Snapshot == INVALID_HANDLE_VALUE)
         return 0;
 
-    MODULEENTRY32 Entry = {};
+    MODULEENTRY32W Entry = {};
     Entry.dwSize = sizeof(Entry);
 
     ULONGLONG Base = 0;
-    if (Module32First(Snapshot, &Entry))
+    if (Module32FirstW(Snapshot, &Entry))
     {
         do
         {
-            if (_stricmp(Entry.szModule, ModuleName) == 0)
+            if (_wcsicmp(Entry.szModule, WideName.c_str()) == 0)
             {
                 Base = reinterpret_cast<ULONGLONG>(Entry.modBaseAddr);
                 break;
             }
-        } while (Module32Next(Snapshot, &Entry));
+        } while (Module32NextW(Snapshot, &Entry));
     }
 
     CloseHandle(Snapshot);
@@ -234,14 +293,14 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
     const auto* Dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(FileBytes.data());
     if (FileBytes.size() < sizeof(IMAGE_DOS_HEADER) || Dos->e_magic != IMAGE_DOS_SIGNATURE)
     {
-        printf("Downloaded file is not a valid PE.\n");
+        Log(L"Downloaded file is not a valid PE.");
         return false;
     }
 
     const auto* Nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(FileBytes.data() + Dos->e_lfanew);
     if (Nt->Signature != IMAGE_NT_SIGNATURE || Nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
     {
-        printf("Downloaded file is not a 64-bit PE.\n");
+        Log(L"Downloaded file is not a 64-bit PE.");
         return false;
     }
 
@@ -264,11 +323,11 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
         MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (!RemoteBase)
     {
-        printf("VirtualAllocEx failed (%lu).\n", GetLastError());
+        Log(L"VirtualAllocEx failed (%lu).", GetLastError());
         return false;
     }
     const ULONGLONG RemoteBaseAddr = reinterpret_cast<ULONGLONG>(RemoteBase);
-    printf("Image space in target: 0x%llX (%lu KB)\n", RemoteBaseAddr, Opt.SizeOfImage / 1024);
+    Log(L"Image space in target: 0x%llX (%lu KB)", RemoteBaseAddr, Opt.SizeOfImage / 1024);
 
     // Relocations, applied to the local copy for the remote base.
     const LONGLONG Delta = static_cast<LONGLONG>(RemoteBaseAddr) - static_cast<LONGLONG>(Opt.ImageBase);
@@ -277,7 +336,7 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
         const IMAGE_DATA_DIRECTORY& RelocDir = Opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         if (RelocDir.Size == 0)
         {
-            printf("DLL has no relocations and could not get its preferred base.\n");
+            Log(L"DLL has no relocations and could not get its preferred base.");
             return false;
         }
 
@@ -319,10 +378,10 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
             ULONGLONG RemoteModule = GetRemoteModuleBase(Pid, DllName);
             if (RemoteModule == 0)
             {
-                printf("Loading dependency into target: %s\n", DllName);
+                Log(L"Loading dependency into target: %hs", DllName);
                 if (!LoadRemoteLibrary(Process, Pid, DllName))
                 {
-                    printf("Could not load %s into the target.\n", DllName);
+                    Log(L"Could not load %hs into the target.", DllName);
                     return false;
                 }
                 RemoteModule = GetRemoteModuleBase(Pid, DllName);
@@ -333,7 +392,7 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
                 LocalModule = LoadLibraryA(DllName);
             if (!LocalModule)
             {
-                printf("Could not load %s in the loader.\n", DllName);
+                Log(L"Could not load %hs in the loader.", DllName);
                 return false;
             }
             const ULONGLONG LocalBase = reinterpret_cast<ULONGLONG>(LocalModule);
@@ -360,7 +419,7 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
 
                 if (!LocalProc)
                 {
-                    printf("Could not resolve an import from %s.\n", DllName);
+                    Log(L"Could not resolve an import from %hs.", DllName);
                     return false;
                 }
 
@@ -372,7 +431,7 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
     // Write the finished image into the target.
     if (!WriteProcessMemory(Process, RemoteBase, Image.data(), Opt.SizeOfImage, nullptr))
     {
-        printf("WriteProcessMemory failed (%lu).\n", GetLastError());
+        Log(L"WriteProcessMemory failed (%lu).", GetLastError());
         return false;
     }
 
@@ -415,7 +474,7 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
     void* RemoteStub = VirtualAllocEx(Process, nullptr, Stub.size(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!RemoteStub)
     {
-        printf("VirtualAllocEx for the stub failed (%lu).\n", GetLastError());
+        Log(L"VirtualAllocEx for the stub failed (%lu).", GetLastError());
         return false;
     }
     WriteProcessMemory(Process, RemoteStub, Stub.data(), Stub.size(), nullptr);
@@ -424,7 +483,7 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
         reinterpret_cast<LPTHREAD_START_ROUTINE>(RemoteStub), nullptr, 0, nullptr);
     if (!Thread)
     {
-        printf("CreateRemoteThread failed (%lu).\n", GetLastError());
+        Log(L"CreateRemoteThread failed (%lu).", GetLastError());
         VirtualFreeEx(Process, RemoteStub, 0, MEM_RELEASE);
         return false;
     }
@@ -437,63 +496,193 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
 
     if (Wait != WAIT_OBJECT_0)
     {
-        printf("The entry point call did not finish.\n");
+        Log(L"The entry point call did not finish.");
         return false;
     }
 
-    printf("DllMain returned %lu.\n", ExitCode);
+    Log(L"DllMain returned %lu.", ExitCode);
     return true;
 }
 
 // ---------------------------------------------------------------------------
+// Injection - runs on a worker thread so the window stays responsive.
+// ---------------------------------------------------------------------------
 
-int main(int argc, char** argv)
+static DWORD WINAPI InjectThread(void*)
 {
-    const char* ProcessName = argc > 1 ? argv[1] : DefaultProcess;
-
-    std::wstring Url = DefaultUrl;
-    if (argc > 2)
-    {
-        Url.clear();
-        for (const char* p = argv[2]; *p; p++)
-            Url.push_back(*p);
-    }
-
-    printf("Downloading the latest bodycam.dll ...\n");
+    Log(L"Downloading the latest bodycam.dll ...");
     std::vector<BYTE> DllBytes;
-    if (!DownloadToMemory(Url.c_str(), DllBytes) || DllBytes.empty())
+    if (!DownloadToMemory(DefaultUrl, DllBytes) || DllBytes.empty())
     {
-        printf("Download failed.\n");
-        return 1;
+        Log(L"Download failed.");
+        PostMessageW(g_Window, WM_INJECT_DONE, 0, 0);
+        return 0;
     }
-    printf("Downloaded %zu KB into memory.\n", DllBytes.size() / 1024);
+    Log(L"Downloaded %zu KB into memory.", DllBytes.size() / 1024);
 
-    printf("Looking for %s ...\n", ProcessName);
-    DWORD Pid = 0;
-    for (int i = 0; i < 60 && Pid == 0; i++)
-    {
-        Pid = FindProcessId(ProcessName);
-        if (Pid == 0)
-            Sleep(1000);
-    }
+    const DWORD Pid = FindProcessId(g_ProcessName.c_str());
     if (Pid == 0)
     {
-        printf("Process not found. Start the game first, or pass its exe name: loader.exe <process.exe>\n");
-        return 1;
+        Log(L"Game is not running anymore.");
+        PostMessageW(g_Window, WM_INJECT_DONE, 0, 0);
+        return 0;
     }
-    printf("Found %s, pid %lu.\n", ProcessName, Pid);
 
     HANDLE Process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
         PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, Pid);
     if (!Process)
     {
-        printf("OpenProcess failed (%lu). Try running the loader as administrator.\n", GetLastError());
-        return 1;
+        Log(L"OpenProcess failed (%lu). Try running the loader as administrator.", GetLastError());
+        PostMessageW(g_Window, WM_INJECT_DONE, 0, 0);
+        return 0;
     }
 
     const bool bOk = ManualMap(Process, Pid, DllBytes);
     CloseHandle(Process);
 
-    printf(bOk ? "Injected. Nothing was written to disk.\n" : "Injection failed.\n");
-    return bOk ? 0 : 1;
+    Log(bOk ? L"Injected. Nothing was written to disk." : L"Injection failed.");
+    PostMessageW(g_Window, WM_INJECT_DONE, bOk ? 1 : 0, 0);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Window
+// ---------------------------------------------------------------------------
+
+static void RefreshStatus()
+{
+    if (g_Busy)
+        return;
+
+    g_GamePid = FindProcessId(g_ProcessName.c_str());
+
+    wchar_t Text[512];
+    if (g_GamePid != 0)
+        swprintf(Text, _countof(Text), L"Game: %hs - running (pid %lu)", g_ProcessName.c_str(), g_GamePid);
+    else
+        swprintf(Text, _countof(Text), L"Game: %hs - not running", g_ProcessName.c_str());
+    SetWindowTextW(g_StatusText, Text);
+
+    EnableWindow(g_InjectButton, g_GamePid != 0);
+}
+
+static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
+{
+    switch (Message)
+    {
+    case WM_CREATE:
+    {
+        HFONT Font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        auto SetFontOf = [Font](HWND Control) {
+            SendMessageW(Control, WM_SETFONT, reinterpret_cast<WPARAM>(Font), TRUE);
+        };
+
+        HWND Title = CreateWindowW(L"STATIC", L"Bodycam Loader", WS_CHILD | WS_VISIBLE,
+            16, 14, 300, 24, Window, nullptr, nullptr, nullptr);
+        SetFontOf(Title);
+
+        g_StatusText = CreateWindowW(L"STATIC", L"Game: -", WS_CHILD | WS_VISIBLE,
+            16, 46, 420, 22, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUS)), nullptr, nullptr);
+        SetFontOf(g_StatusText);
+
+        g_InjectButton = CreateWindowW(L"BUTTON", L"Inject", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+            448, 40, 110, 34, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
+        SetFontOf(g_InjectButton);
+
+        g_LogEdit = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+            ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+            16, 84, 542, 330, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LOG)), nullptr, nullptr);
+        SetFontOf(g_LogEdit);
+
+        SetTimer(Window, 1, 1000, nullptr);
+        RefreshStatus();
+        return 0;
+    }
+
+    case WM_TIMER:
+        RefreshStatus();
+        return 0;
+
+    case WM_COMMAND:
+        if (LOWORD(WParam) == IDC_INJECT && HIWORD(WParam) == BN_CLICKED && !g_Busy)
+        {
+            g_Busy = true;
+            EnableWindow(g_InjectButton, FALSE);
+            SetWindowTextW(g_StatusText, L"Working ...");
+            HANDLE Thread = CreateThread(nullptr, 0, InjectThread, nullptr, 0, nullptr);
+            if (Thread)
+                CloseHandle(Thread);
+            else
+                g_Busy = false;
+        }
+        return 0;
+
+    case WM_LOG_LINE:
+    {
+        auto* Line = reinterpret_cast<std::wstring*>(LParam);
+        AppendLogLine(Line->c_str());
+        delete Line;
+        return 0;
+    }
+
+    case WM_INJECT_DONE:
+        g_Busy = false;
+        RefreshStatus();
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProcW(Window, Message, WParam, LParam);
+}
+
+int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, wchar_t*, int ShowCmd)
+{
+    // Optional: loader.exe <process.exe> overrides the target process name.
+    int Argc = 0;
+    wchar_t** Argv = CommandLineToArgvW(GetCommandLineW(), &Argc);
+    if (Argv && Argc > 1)
+    {
+        g_ProcessName.clear();
+        for (const wchar_t* p = Argv[1]; *p; p++)
+            g_ProcessName.push_back(static_cast<char>(*p));
+    }
+    if (Argv)
+        LocalFree(Argv);
+
+    INITCOMMONCONTROLSEX Icc = {};
+    Icc.dwSize = sizeof(Icc);
+    Icc.dwICC = ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&Icc);
+
+    WNDCLASSW Class = {};
+    Class.lpfnWndProc = WindowProc;
+    Class.hInstance = Instance;
+    Class.lpszClassName = L"BodycamLoaderWindow";
+    Class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    Class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassW(&Class);
+
+    g_Window = CreateWindowExW(0, Class.lpszClassName, L"Bodycam Loader",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, 590, 470, nullptr, nullptr, Instance, nullptr);
+    if (!g_Window)
+        return 1;
+
+    ShowWindow(g_Window, ShowCmd);
+    UpdateWindow(g_Window);
+
+    Log(L"Ready. The loader does nothing until you press Inject.");
+    Log(L"It will download the latest bodycam.dll into memory and inject it - no file is saved to disk.");
+
+    MSG Msg = {};
+    while (GetMessageW(&Msg, nullptr, 0, 0) > 0)
+    {
+        TranslateMessage(&Msg);
+        DispatchMessageW(&Msg);
+    }
+    return 0;
 }
