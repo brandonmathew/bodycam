@@ -25,6 +25,8 @@
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dwmapi.lib")
+#include <dwmapi.h>
 
 static const char* DefaultProcess = "Bodycam-Win64-Shipping.exe";
 static const wchar_t* DefaultUrl = L"https://github.com/brandonmathew/bodycam/releases/download/latest/bodycam.dll";
@@ -32,47 +34,53 @@ static const wchar_t* DefaultUrl = L"https://github.com/brandonmathew/bodycam/re
 static std::string g_ProcessName = DefaultProcess;
 
 static HWND g_Window = nullptr;
-static HWND g_StatusText = nullptr;
 static HWND g_InjectButton = nullptr;
-static HWND g_LogEdit = nullptr;
 static HWND g_Progress = nullptr;
 static bool g_Busy = false;
+static bool g_Debug = false;
 static DWORD g_GamePid = 0;
 
-static constexpr UINT WM_LOG_LINE = WM_APP + 1;
 static constexpr UINT WM_INJECT_DONE = WM_APP + 2;
 static constexpr UINT WM_DOWNLOAD_PROGRESS = WM_APP + 3;
+static constexpr UINT WM_RESULT_TEXT = WM_APP + 4;
 static constexpr int IDC_INJECT = 1001;
-static constexpr int IDC_STATUS = 1002;
-static constexpr int IDC_LOG = 1003;
 static constexpr int IDC_PROGRESS = 1004;
 
 // ---------------------------------------------------------------------------
-// Log - safe to call from any thread; the line is appended on the UI thread.
+// Log - quiet by default. With --debug the loader opens a console and the
+// log goes there. The window itself never shows a log.
 // ---------------------------------------------------------------------------
 
 static void Log(const wchar_t* Format, ...)
 {
+    if (!g_Debug)
+        return;
+
     wchar_t Buffer[1024];
     va_list Args;
     va_start(Args, Format);
     vswprintf(Buffer, _countof(Buffer), Format, Args);
     va_end(Args);
 
-    auto* Line = new std::wstring(Buffer);
-    if (g_Window && IsWindow(g_Window))
-        PostMessageW(g_Window, WM_LOG_LINE, 0, reinterpret_cast<LPARAM>(Line));
-    else
-        delete Line;
+    char Narrow[1024];
+    const int Len = static_cast<int>(wcslen(Buffer));
+    for (int i = 0; i < Len && i < 1023; i++)
+        Narrow[i] = Buffer[i] < 128 ? static_cast<char>(Buffer[i]) : '?';
+    Narrow[Len < 1023 ? Len : 1023] = '\0';
+
+    fputs(Narrow, stdout);
+    fputs("\n", stdout);
+    fflush(stdout);
 }
 
-static void AppendLogLine(const wchar_t* Line)
+// One-line status/result text under the progress bar in the window.
+static void SetResult(const wchar_t* Text, int Kind)
 {
-    const int Length = GetWindowTextLengthW(g_LogEdit);
-    SendMessageW(g_LogEdit, EM_SETSEL, Length, Length);
-    SendMessageW(g_LogEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(Line));
-    SendMessageW(g_LogEdit, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L"\r\n"));
-    SendMessageW(g_LogEdit, EM_SCROLLCARET, 0, 0);
+    auto* Line = new std::wstring(Text);
+    if (g_Window && IsWindow(g_Window))
+        PostMessageW(g_Window, WM_RESULT_TEXT, static_cast<WPARAM>(Kind), reinterpret_cast<LPARAM>(Line));
+    else
+        delete Line;
 }
 
 // ---------------------------------------------------------------------------
@@ -676,11 +684,13 @@ static bool ManualMap(HANDLE Process, DWORD Pid, const std::vector<BYTE>& FileBy
 
 static DWORD WINAPI InjectThread(void*)
 {
+    SetResult(L"Downloading the latest build ...", 0);
     Log(L"Downloading the latest bodycam.dll ...");
     std::vector<BYTE> DllBytes;
     if (!DownloadToMemory(DefaultUrl, DllBytes) || DllBytes.empty())
     {
         Log(L"Download failed.");
+        SetResult(L"Download failed. Run with --debug for details.", 2);
         PostMessageW(g_Window, WM_INJECT_DONE, 0, 0);
         return 0;
     }
@@ -690,6 +700,7 @@ static DWORD WINAPI InjectThread(void*)
     if (Pid == 0)
     {
         Log(L"Game is not running anymore.");
+        SetResult(L"The game closed before injection could start.", 2);
         PostMessageW(g_Window, WM_INJECT_DONE, 0, 0);
         return 0;
     }
@@ -699,37 +710,146 @@ static DWORD WINAPI InjectThread(void*)
     if (!Process)
     {
         Log(L"OpenProcess failed (%lu). Try running the loader as administrator.", GetLastError());
+        SetResult(L"Could not open the game process. Try running the loader as administrator.", 2);
         PostMessageW(g_Window, WM_INJECT_DONE, 0, 0);
         return 0;
     }
 
+    SetResult(L"Injecting ...", 0);
     const bool bOk = ManualMap(Process, Pid, DllBytes);
     CloseHandle(Process);
 
     Log(bOk ? L"Injected. Nothing was written to disk." : L"Injection failed.");
+    SetResult(bOk ? L"Injected. In game, press END to unload."
+                  : L"Injection failed. Run with --debug for details.", bOk ? 1 : 2);
     PostMessageW(g_Window, WM_INJECT_DONE, bOk ? 1 : 0, 0);
     return 0;
 }
 
 // ---------------------------------------------------------------------------
-// Window
+// Window - dark theme matching the in-game menu: charcoal panel, header
+// band, 3px blue accent edge, accent colour for the action button and the
+// progress fill.
 // ---------------------------------------------------------------------------
+
+static const COLORREF ColPanel = RGB(19, 21, 24);
+static const COLORREF ColHeader = RGB(24, 27, 32);
+static const COLORREF ColBorder = RGB(45, 50, 58);
+static const COLORREF ColAccent = RGB(41, 140, 217);
+static const COLORREF ColAccentHover = RGB(56, 152, 224);
+static const COLORREF ColAccentPressed = RGB(33, 116, 182);
+static const COLORREF ColText = RGB(232, 234, 237);
+static const COLORREF ColMuted = RGB(148, 156, 165);
+static const COLORREF ColTrack = RGB(13, 15, 17);
+static const COLORREF ColGreen = RGB(74, 190, 110);
+static const COLORREF ColFail = RGB(224, 108, 108);
+static const COLORREF ColDisabled = RGB(38, 44, 51);
+
+static HFONT g_FontTitle = nullptr;
+static HFONT g_FontBody = nullptr;
+static HFONT g_FontSmall = nullptr;
+static HFONT g_FontButton = nullptr;
+
+static bool g_StatusRunning = false;
+static std::wstring g_ResultText = L"Start the game, then press Inject.";
+static int g_ResultKind = 0; // 0 neutral, 1 success, 2 failure
+static int g_ProgressPercent = 0;
+static bool g_ProgressMarquee = false;
+static int g_MarqueePhase = 0;
+static bool g_ButtonHover = false;
+
+// --- progress bar (custom painted) ---
+
+static LRESULT CALLBACK ProgressProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
+{
+    switch (Message)
+    {
+    case WM_TIMER:
+        g_MarqueePhase += 4;
+        InvalidateRect(Window, nullptr, FALSE);
+        return 0;
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT Ps;
+        HDC Dc = BeginPaint(Window, &Ps);
+        RECT Rc;
+        GetClientRect(Window, &Rc);
+
+        HBRUSH TrackBrush = CreateSolidBrush(ColTrack);
+        HPEN BorderPen = CreatePen(PS_SOLID, 1, ColBorder);
+        SelectObject(Dc, TrackBrush);
+        SelectObject(Dc, BorderPen);
+        RoundRect(Dc, Rc.left, Rc.top, Rc.right, Rc.bottom, 10, 10);
+        DeleteObject(TrackBrush);
+        DeleteObject(BorderPen);
+
+        const int InnerW = (Rc.right - Rc.left) - 2;
+        HRGN Clip = CreateRoundRectRgn(Rc.left + 1, Rc.top + 1, Rc.right - 1, Rc.bottom - 1, 8, 8);
+        SelectClipRgn(Dc, Clip);
+        HBRUSH Fill = CreateSolidBrush(ColAccent);
+        if (g_ProgressMarquee)
+        {
+            const int BlockW = 70;
+            const int Span = InnerW + BlockW;
+            const int X = Rc.left + 1 + (Span > 0 ? g_MarqueePhase % Span : 0) - BlockW;
+            RECT Block = { X, Rc.top + 1, X + BlockW, Rc.bottom - 1 };
+            FillRect(Dc, &Block, Fill);
+        }
+        else if (g_ProgressPercent > 0)
+        {
+            RECT FillRc = { Rc.left + 1, Rc.top + 1,
+                Rc.left + 1 + InnerW * g_ProgressPercent / 100, Rc.bottom - 1 };
+            FillRect(Dc, &FillRc, Fill);
+        }
+        DeleteObject(Fill);
+        SelectClipRgn(Dc, nullptr);
+        DeleteObject(Clip);
+
+        EndPaint(Window, &Ps);
+        return 0;
+    }
+    }
+    return DefWindowProcW(Window, Message, WParam, LParam);
+}
+
+// --- inject button hover tracking ---
+
+static LRESULT CALLBACK ButtonSubclass(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam,
+    UINT_PTR, DWORD_PTR)
+{
+    if (Message == WM_MOUSEMOVE && !g_ButtonHover)
+    {
+        g_ButtonHover = true;
+        TRACKMOUSEEVENT Tme = {};
+        Tme.cbSize = sizeof(Tme);
+        Tme.dwFlags = TME_LEAVE;
+        Tme.hwndTrack = Window;
+        TrackMouseEvent(&Tme);
+        InvalidateRect(Window, nullptr, FALSE);
+    }
+    else if (Message == WM_MOUSELEAVE)
+    {
+        g_ButtonHover = false;
+        InvalidateRect(Window, nullptr, FALSE);
+    }
+    return DefSubclassProc(Window, Message, WParam, LParam);
+}
+
+// --- main window ---
 
 static void RefreshStatus()
 {
-    if (g_Busy)
+    const DWORD Pid = FindProcessId(g_ProcessName.c_str());
+    const bool Running = Pid != 0;
+    if (Running == g_StatusRunning && Pid == g_GamePid)
         return;
 
-    g_GamePid = FindProcessId(g_ProcessName.c_str());
-
-    wchar_t Text[512];
-    if (g_GamePid != 0)
-        swprintf(Text, _countof(Text), L"Game: %hs - running (pid %lu)", g_ProcessName.c_str(), g_GamePid);
-    else
-        swprintf(Text, _countof(Text), L"Game: %hs - not running", g_ProcessName.c_str());
-    SetWindowTextW(g_StatusText, Text);
-
-    EnableWindow(g_InjectButton, g_GamePid != 0);
+    g_GamePid = Pid;
+    g_StatusRunning = Running;
+    if (!g_Busy)
+        EnableWindow(g_InjectButton, Running);
+    InvalidateRect(g_Window, nullptr, FALSE);
 }
 
 static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam)
@@ -737,51 +857,128 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
     switch (Message)
     {
     case WM_CREATE:
-    {
-        HFONT Font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        auto SetFontOf = [Font](HWND Control) {
-            SendMessageW(Control, WM_SETFONT, reinterpret_cast<WPARAM>(Font), TRUE);
-        };
+        g_Progress = CreateWindowW(L"BodycamProgress", L"", WS_CHILD | WS_VISIBLE,
+            20, 118, 460, 10, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROGRESS)), nullptr, nullptr);
 
-        HWND Title = CreateWindowW(L"STATIC", L"Bodycam Loader", WS_CHILD | WS_VISIBLE,
-            16, 14, 300, 24, Window, nullptr, nullptr, nullptr);
-        SetFontOf(Title);
-
-        g_StatusText = CreateWindowW(L"STATIC", L"Game: -", WS_CHILD | WS_VISIBLE,
-            16, 46, 420, 22, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUS)), nullptr, nullptr);
-        SetFontOf(g_StatusText);
-
-        g_InjectButton = CreateWindowW(L"BUTTON", L"Inject", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
-            448, 40, 110, 34, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
-        SetFontOf(g_InjectButton);
-
-        g_Progress = CreateWindowW(PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
-            16, 84, 542, 18, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROGRESS)), nullptr, nullptr);
-        SendMessageW(g_Progress, PBM_SETRANGE32, 0, 100);
-        SendMessageW(g_Progress, PBM_SETPOS, 0, 0);
-
-        g_LogEdit = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
-            ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-            16, 112, 542, 302, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LOG)), nullptr, nullptr);
-        SetFontOf(g_LogEdit);
+        g_InjectButton = CreateWindowW(L"BUTTON", L"Inject", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
+            350, 192, 130, 38, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
+        SetWindowSubclass(g_InjectButton, ButtonSubclass, 1, 0);
 
         SetTimer(Window, 1, 1000, nullptr);
         RefreshStatus();
         return 0;
-    }
 
     case WM_TIMER:
         RefreshStatus();
         return 0;
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT Ps;
+        HDC Dc = BeginPaint(Window, &Ps);
+        RECT Client;
+        GetClientRect(Window, &Client);
+
+        HBRUSH Panel = CreateSolidBrush(ColPanel);
+        FillRect(Dc, &Client, Panel);
+        DeleteObject(Panel);
+
+        // Header band + divider
+        RECT Header = { 0, 0, Client.right, 52 };
+        HBRUSH HeaderBrush = CreateSolidBrush(ColHeader);
+        FillRect(Dc, &Header, HeaderBrush);
+        DeleteObject(HeaderBrush);
+        HPEN BorderPen = CreatePen(PS_SOLID, 1, ColBorder);
+        SelectObject(Dc, BorderPen);
+        MoveToEx(Dc, 0, 52, nullptr);
+        LineTo(Dc, Client.right, 52);
+        MoveToEx(Dc, 0, 176, nullptr);
+        LineTo(Dc, Client.right, 176);
+        DeleteObject(BorderPen);
+
+        // Accent edge, full height on the left (same as the game menu)
+        RECT Edge = { 0, 0, 3, Client.bottom };
+        HBRUSH Accent = CreateSolidBrush(ColAccent);
+        FillRect(Dc, &Edge, Accent);
+        DeleteObject(Accent);
+
+        SetBkMode(Dc, TRANSPARENT);
+
+        // Title
+        SelectObject(Dc, g_FontTitle);
+        SetTextColor(Dc, ColText);
+        TextOutW(Dc, 20, 15, L"Bodycam Loader", 14);
+
+        // Game status
+        SelectObject(Dc, g_FontSmall);
+        SetTextColor(Dc, ColMuted);
+        TextOutW(Dc, 20, 66, L"GAME", 4);
+
+        HBRUSH Dot = CreateSolidBrush(g_StatusRunning ? ColGreen : RGB(90, 98, 106));
+        SelectObject(Dc, Dot);
+        SelectObject(Dc, GetStockObject(NULL_PEN));
+        Ellipse(Dc, 20, 90, 30, 100);
+        DeleteObject(Dot);
+
+        SelectObject(Dc, g_FontBody);
+        SetTextColor(Dc, ColText);
+        wchar_t Status[256];
+        if (g_StatusRunning)
+            swprintf(Status, _countof(Status), L"%hs - running (pid %lu)", g_ProcessName.c_str(), g_GamePid);
+        else
+            swprintf(Status, _countof(Status), L"%hs - not running", g_ProcessName.c_str());
+        TextOutW(Dc, 38, 86, Status, static_cast<int>(wcslen(Status)));
+
+        // Result line
+        SelectObject(Dc, g_FontBody);
+        SetTextColor(Dc, g_ResultKind == 1 ? ColGreen : (g_ResultKind == 2 ? ColFail : ColMuted));
+        TextOutW(Dc, 20, 140, g_ResultText.c_str(), static_cast<int>(g_ResultText.size()));
+
+        // Footer
+        SelectObject(Dc, g_FontSmall);
+        SetTextColor(Dc, ColMuted);
+        const wchar_t* Footer = L"Downloads the latest build into memory - nothing is written to disk.";
+        TextOutW(Dc, 20, 203, Footer, static_cast<int>(wcslen(Footer)));
+
+        EndPaint(Window, &Ps);
+        return 0;
+    }
+
+    case WM_DRAWITEM:
+    {
+        const auto* Dis = reinterpret_cast<const DRAWITEMSTRUCT*>(LParam);
+        if (Dis->CtlID != IDC_INJECT)
+            break;
+
+        const bool Disabled = (Dis->itemState & ODS_DISABLED) != 0;
+        const bool Pressed = (Dis->itemState & ODS_SELECTED) != 0;
+        const COLORREF FillColor = Disabled ? ColDisabled
+            : (Pressed ? ColAccentPressed : (g_ButtonHover ? ColAccentHover : ColAccent));
+
+        HBRUSH Brush = CreateSolidBrush(FillColor);
+        HPEN Pen = CreatePen(PS_SOLID, 1, FillColor);
+        SelectObject(Dis->hDC, Brush);
+        SelectObject(Dis->hDC, Pen);
+        RoundRect(Dis->hDC, Dis->rcItem.left, Dis->rcItem.top, Dis->rcItem.right, Dis->rcItem.bottom, 8, 8);
+        DeleteObject(Brush);
+        DeleteObject(Pen);
+
+        SetBkMode(Dis->hDC, TRANSPARENT);
+        SetTextColor(Dis->hDC, Disabled ? ColMuted : RGB(255, 255, 255));
+        SelectObject(Dis->hDC, g_FontButton);
+        RECT Rc = Dis->rcItem;
+        DrawTextW(Dis->hDC, L"Inject", -1, &Rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return TRUE;
+    }
 
     case WM_COMMAND:
         if (LOWORD(WParam) == IDC_INJECT && HIWORD(WParam) == BN_CLICKED && !g_Busy)
         {
             g_Busy = true;
             EnableWindow(g_InjectButton, FALSE);
-            SetWindowTextW(g_StatusText, L"Working ...");
-            SendMessageW(g_Progress, PBM_SETPOS, 0, 0);
+            g_ProgressPercent = 0;
+            g_ProgressMarquee = false;
+            InvalidateRect(g_Progress, nullptr, FALSE);
             HANDLE Thread = CreateThread(nullptr, 0, InjectThread, nullptr, 0, nullptr);
             if (Thread)
                 CloseHandle(Thread);
@@ -790,40 +987,46 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         }
         return 0;
 
-    case WM_LOG_LINE:
+    case WM_RESULT_TEXT:
     {
         auto* Line = reinterpret_cast<std::wstring*>(LParam);
-        AppendLogLine(Line->c_str());
+        g_ResultText = *Line;
+        g_ResultKind = static_cast<int>(WParam);
         delete Line;
+        InvalidateRect(Window, nullptr, FALSE);
         return 0;
     }
 
     case WM_DOWNLOAD_PROGRESS:
         if (WParam == PROGRESS_MARQUEE)
         {
-            SetWindowLongPtrW(g_Progress, GWL_STYLE,
-                GetWindowLongPtrW(g_Progress, GWL_STYLE) | PBS_MARQUEE);
-            SendMessageW(g_Progress, PBM_SETMARQUEE, TRUE, 30);
+            if (!g_ProgressMarquee)
+            {
+                g_ProgressMarquee = true;
+                SetTimer(g_Progress, 2, 30, nullptr);
+            }
         }
         else
         {
-            if (GetWindowLongPtrW(g_Progress, GWL_STYLE) & PBS_MARQUEE)
+            if (g_ProgressMarquee)
             {
-                SendMessageW(g_Progress, PBM_SETMARQUEE, FALSE, 0);
-                SetWindowLongPtrW(g_Progress, GWL_STYLE,
-                    GetWindowLongPtrW(g_Progress, GWL_STYLE) & ~PBS_MARQUEE);
+                g_ProgressMarquee = false;
+                KillTimer(g_Progress, 2);
             }
-            if (WParam == PROGRESS_DONE)
-                SendMessageW(g_Progress, PBM_SETPOS, 100, 0);
-            else
-                SendMessageW(g_Progress, PBM_SETPOS, static_cast<int>(WParam), 0);
+            g_ProgressPercent = WParam == PROGRESS_DONE ? 100 : static_cast<int>(WParam);
         }
+        InvalidateRect(g_Progress, nullptr, FALSE);
         return 0;
 
     case WM_INJECT_DONE:
         g_Busy = false;
         if (WParam == 0)
-            SendMessageW(g_Progress, PBM_SETPOS, 0, 0);
+        {
+            g_ProgressPercent = 0;
+            g_ProgressMarquee = false;
+            KillTimer(g_Progress, 2);
+            InvalidateRect(g_Progress, nullptr, FALSE);
+        }
         RefreshStatus();
         return 0;
 
@@ -837,36 +1040,72 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 
 int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, wchar_t*, int ShowCmd)
 {
-    // Optional: loader.exe <process.exe> overrides the target process name.
+    // Arguments: loader.exe [process.exe] [--debug]
     int Argc = 0;
     wchar_t** Argv = CommandLineToArgvW(GetCommandLineW(), &Argc);
-    if (Argv && Argc > 1)
-    {
-        g_ProcessName.clear();
-        for (const wchar_t* p = Argv[1]; *p; p++)
-            g_ProcessName.push_back(static_cast<char>(*p));
-    }
     if (Argv)
+    {
+        for (int i = 1; i < Argc; i++)
+        {
+            if (wcscmp(Argv[i], L"--debug") == 0)
+            {
+                g_Debug = true;
+            }
+            else if (g_ProcessName == DefaultProcess)
+            {
+                g_ProcessName.clear();
+                for (const wchar_t* p = Argv[i]; *p; p++)
+                    g_ProcessName.push_back(static_cast<char>(*p));
+            }
+        }
         LocalFree(Argv);
+    }
 
-    INITCOMMONCONTROLSEX Icc = {};
-    Icc.dwSize = sizeof(Icc);
-    Icc.dwICC = ICC_STANDARD_CLASSES;
-    InitCommonControlsEx(&Icc);
+    if (g_Debug)
+    {
+        AllocConsole();
+        FILE* ConsoleOut = nullptr;
+        freopen_s(&ConsoleOut, "CONOUT$", "w", stdout);
+        SetConsoleTitleW(L"Bodycam Loader - debug");
+        printf("Debug log on. Target process: %s\n", g_ProcessName.c_str());
+    }
+
+    g_FontTitle = CreateFontW(-19, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_FontBody = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_FontSmall = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_FontButton = CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+    WNDCLASSW ProgressClass = {};
+    ProgressClass.lpfnWndProc = ProgressProc;
+    ProgressClass.hInstance = Instance;
+    ProgressClass.lpszClassName = L"BodycamProgress";
+    RegisterClassW(&ProgressClass);
 
     WNDCLASSW Class = {};
     Class.lpfnWndProc = WindowProc;
     Class.hInstance = Instance;
     Class.lpszClassName = L"BodycamLoaderWindow";
-    Class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     Class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&Class);
 
+    RECT Desired = { 0, 0, 500, 248 };
+    AdjustWindowRect(&Desired, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
+
     g_Window = CreateWindowExW(0, Class.lpszClassName, L"Bodycam Loader",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 590, 470, nullptr, nullptr, Instance, nullptr);
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        Desired.right - Desired.left, Desired.bottom - Desired.top,
+        nullptr, nullptr, Instance, nullptr);
     if (!g_Window)
         return 1;
+
+    // Dark title bar to match the window.
+    const BOOL Dark = TRUE;
+    DwmSetWindowAttribute(g_Window, 20, &Dark, sizeof(Dark));
 
     ShowWindow(g_Window, ShowCmd);
     UpdateWindow(g_Window);
