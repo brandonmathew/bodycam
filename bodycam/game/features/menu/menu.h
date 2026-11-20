@@ -17,40 +17,21 @@ namespace features
 		bool visibility_check = true;
 		bool team_check = true;
 
-		// Aim tuning: written to the local player's ALS AnimBP every frame
-		// while aim_tuning is on; the game's own values are restored when
-		// it is switched off. Sliders seed from the game values on first use.
-		bool aim_tuning = false;
-		float ads_in = 0.25f;
-		float ads_out = 0.25f;
-		float interp_speed = 10.f;
-
 		// Search radius (pixels from the crosshair) for esp's bestTarget.
 		float fov = 200.f;
 
-		// Aim move: while on and the aim key is held, the mouse is steered
-		// toward the best target's head with velocity smoothing.
-		// aim_speed caps the mouse speed; aim_smooth is the smoothing
-		// time in seconds (higher = softer acceleration and landing).
+		// Aim move: while on and the aim key is held, the mouse is moved
+		// straight onto the best target's head. No speed or smoothing.
 		bool aim_move = false;
-		float aim_speed = 0.35f;
-		float aim_smooth = 0.08f;
 
 	private:
 		void handle_input( );
-		void apply_aim_tuning( );
 		void draw_watermark( SDK::UCanvas* canvas );
 		void draw_menu( SDK::UCanvas* canvas );
 		void free_mouse( );
 		void capture_mouse( );
 
 		int dragging_row = -1;
-		bool sliders_seeded = false;
-		bool aim_applied = false;
-		SDK::UALS_AnimBP_C* aim_instance = nullptr;
-		double orig_ads_in = 0.0;
-		double orig_ads_out = 0.0;
-		double orig_interp = 0.0;
 
 		bool mouse_freed = false;
 		float mouse_x = 0.f;

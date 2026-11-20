@@ -46,13 +46,7 @@ static int build_rows( features::c_menu& m, menu_row out[ 20 ] )
 	out[ n++ ] = { menu_row::kind::toggle, L"Team check", &m.team_check };
 	out[ n++ ] = { menu_row::kind::slider, L"FOV", nullptr, &m.fov, 0.f, 600.f, L"%.0f" };
 	out[ n++ ] = { menu_row::kind::section, L"AIM" };
-	out[ n++ ] = { menu_row::kind::toggle, L"Aim tuning", &m.aim_tuning };
-	out[ n++ ] = { menu_row::kind::slider, L"ADS in", nullptr, &m.ads_in, 0.f, 1.f, L"%.2f", &m.aim_tuning };
-	out[ n++ ] = { menu_row::kind::slider, L"ADS out", nullptr, &m.ads_out, 0.f, 1.f, L"%.2f", &m.aim_tuning };
-	out[ n++ ] = { menu_row::kind::slider, L"Interp speed", nullptr, &m.interp_speed, 0.f, 50.f, L"%.1f", &m.aim_tuning };
 	out[ n++ ] = { menu_row::kind::toggle, L"Aim move", &m.aim_move };
-	out[ n++ ] = { menu_row::kind::slider, L"Aim speed", nullptr, &m.aim_speed, 0.05f, 1.f, L"%.2f", &m.aim_move };
-	out[ n++ ] = { menu_row::kind::slider, L"Aim smooth", nullptr, &m.aim_smooth, 0.f, 0.25f, L"%.2f", &m.aim_move };
 	return n;
 }
 
@@ -80,25 +74,6 @@ static SDK::APlayerController* get_local_controller( )
 		return nullptr;
 
 	return local_player->PlayerController;
-}
-
-// The local player's ALS animation instance, or nullptr when not in a
-// match / the pawn is not the ALS character / the anim class differs.
-static SDK::UALS_AnimBP_C* get_local_animbp( )
-{
-	SDK::APlayerController* const controller = get_local_controller( );
-	if ( !controller || !controller->AcknowledgedPawn )
-		return nullptr;
-
-	SDK::AALS_Base_CharacterBP_C* const character = static_cast< SDK::AALS_Base_CharacterBP_C* >( controller->AcknowledgedPawn );
-	if ( !character->IsA( SDK::AALS_Base_CharacterBP_C::StaticClass( ) ) || !character->Mesh || !character->Mesh->AnimScriptInstance )
-		return nullptr;
-
-	SDK::UAnimInstance* const anim = character->Mesh->AnimScriptInstance;
-	if ( !anim->IsA( SDK::UALS_AnimBP_C::StaticClass( ) ) )
-		return nullptr;
-
-	return static_cast< SDK::UALS_AnimBP_C* >( anim );
 }
 
 // Slider geometry, shared by drawing and mouse handling.
@@ -245,51 +220,6 @@ void features::c_menu::handle_input( )
 	}
 }
 
-void features::c_menu::apply_aim_tuning( )
-{
-	SDK::UALS_AnimBP_C* const anim = get_local_animbp( );
-
-	if ( !aim_tuning )
-	{
-		// Restore the game's own values on the instance we changed.
-		if ( aim_applied && anim && anim == aim_instance )
-		{
-			anim->ADS_in_TIme = orig_ads_in;
-			anim->ADS_Out_Time = orig_ads_out;
-			anim->SmoothedAimingRotationInterpSpeed = orig_interp;
-		}
-		aim_applied = false;
-		aim_instance = nullptr;
-		return;
-	}
-
-	if ( !anim )
-		return;
-
-	if ( anim != aim_instance )
-	{
-		// New instance (spawn / respawn / new match): remember its defaults
-		// for a later restore, and seed the sliders from them once.
-		orig_ads_in = anim->ADS_in_TIme;
-		orig_ads_out = anim->ADS_Out_Time;
-		orig_interp = anim->SmoothedAimingRotationInterpSpeed;
-		aim_instance = anim;
-
-		if ( !sliders_seeded )
-		{
-			ads_in = clampf( static_cast< float >( orig_ads_in ), 0.f, 1.f );
-			ads_out = clampf( static_cast< float >( orig_ads_out ), 0.f, 1.f );
-			interp_speed = clampf( static_cast< float >( orig_interp ), 0.f, 50.f );
-			sliders_seeded = true;
-		}
-	}
-
-	anim->ADS_in_TIme = ads_in;
-	anim->ADS_Out_Time = ads_out;
-	anim->SmoothedAimingRotationInterpSpeed = interp_speed;
-	aim_applied = true;
-}
-
 void features::c_menu::draw_watermark( SDK::UCanvas* canvas )
 {
 	fill_rect( canvas, 10.f, 8.f, 236.f, 26.f, ColPanel );
@@ -379,8 +309,6 @@ void features::c_menu::process( SDK::UCanvas* canvas )
 	}
 
 	handle_input( );
-
-	apply_aim_tuning( );
 
 	draw_watermark( canvas );
 

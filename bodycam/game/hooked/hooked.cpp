@@ -12,6 +12,7 @@ void hk_PostRender( SDK::UObject* ViewportClient, SDK::UCanvas* Canvas )
 		return;
 
 	features::esp->process( Canvas );
+	features::aim->process( Canvas );
 	features::menu->process( Canvas );
 }
 

@@ -170,6 +170,7 @@ namespace
 SDK::FVector2D features::c_esp::bestTarget( SDK::UCanvas* Canvas )
 {
   current_target = nullptr;
+  current_target_head = { -1.f, -1.f };
 
   SDK::UWorld* const world = SDK::UWorld::GetWorld( );
   if ( !world || !world->OwningGameInstance || !world->OwningGameInstance->LocalPlayers[ 0 ] )
@@ -235,99 +236,8 @@ SDK::FVector2D features::c_esp::bestTarget( SDK::UCanvas* Canvas )
     }
   }
 
+  current_target_head = best_point;
   return best_point;
-}
-
-void features::c_esp::apply_aim( SDK::UCanvas* Canvas, const SDK::FVector2D& target )
-{
-  const ULONGLONG now = GetTickCount64( );
-
-  // Any reason not to aim resets the motion state, so stale velocity
-  // never leaks into the next engagement.
-  if ( !features::menu->aim_move || features::menu->open || target.X < 0.f
-    || ( GetAsyncKeyState( VK_RBUTTON ) & 0x8000 ) == 0 )
-  {
-    aim_vel_x = 0.f;
-    aim_vel_y = 0.f;
-    aim_remainder_x = 0.f;
-    aim_remainder_y = 0.f;
-    aim_last_tick = 0;
-    aim_target = nullptr;
-    return;
-  }
-
-  // Real frame time, clamped so a hitch can't throw the mouse.
-  float dt = aim_last_tick ? static_cast< float >( now - aim_last_tick ) / 1000.f : ( 1.f / 60.f );
-  aim_last_tick = now;
-  if ( dt < 0.0005f )
-    dt = 0.0005f;
-  if ( dt > 0.05f )
-    dt = 0.05f;
-
-  // A new target starts from rest; carrying the old target's velocity
-  // into a different direction swings past it.
-  if ( current_target != aim_target )
-  {
-    aim_target = current_target;
-    aim_vel_x = 0.f;
-    aim_vel_y = 0.f;
-  }
-
-  const float dx = target.X - Canvas->ClipX * 0.5f;
-  const float dy = target.Y - Canvas->ClipY * 0.5f;
-
-  // On target: inside a 2px deadzone, hold still instead of jittering.
-  if ( fabsf( dx ) < 2.f && fabsf( dy ) < 2.f )
-  {
-    aim_vel_x = 0.f;
-    aim_vel_y = 0.f;
-    aim_remainder_x = 0.f;
-    aim_remainder_y = 0.f;
-    return;
-  }
-
-  const float smooth = features::menu->aim_smooth < 0.01f ? 0.01f : features::menu->aim_smooth;
-
-  // Desired velocity: the speed that would cover the remaining distance
-  // in one smoothing time, capped by the Aim speed slider (500 px/s at
-  // the bottom of the slider, 6000 px/s at the top).
-  float want_x = dx / smooth;
-  float want_y = dy / smooth;
-  const float max_speed = 500.f + features::menu->aim_speed * 5500.f;
-  const float want_len = sqrtf( want_x * want_x + want_y * want_y );
-  if ( want_len > max_speed )
-  {
-    want_x *= max_speed / want_len;
-    want_y *= max_speed / want_len;
-  }
-
-  // Accelerate the actual velocity toward the desired one. The approach
-  // runs on frame time (1 - e^(-dt/tau)), so the feel is identical at
-  // 30, 60 or 240 fps; tau under the smoothing time keeps it responsive
-  // while still ramping instead of snapping.
-  const float alpha = 1.f - expf( -dt / ( smooth * 0.6f ) );
-  aim_vel_x += ( want_x - aim_vel_x ) * alpha;
-  aim_vel_y += ( want_y - aim_vel_y ) * alpha;
-
-  // Integrate, carrying the sub-pixel fraction so slow, smooth motion
-  // still accumulates into real mouse steps.
-  aim_remainder_x += aim_vel_x * dt;
-  aim_remainder_y += aim_vel_y * dt;
-
-  const LONG move_x = static_cast< LONG >( aim_remainder_x );
-  const LONG move_y = static_cast< LONG >( aim_remainder_y );
-  aim_remainder_x -= static_cast< float >( move_x );
-  aim_remainder_y -= static_cast< float >( move_y );
-
-  if ( move_x == 0 && move_y == 0 )
-    return;
-
-  INPUT input = { };
-  input.type = INPUT_MOUSE;
-  input.mi.dx = move_x;
-  input.mi.dy = move_y;
-  input.mi.dwFlags = MOUSEEVENTF_MOVE;
-  SendInput( 1, &input, sizeof( input ) );
 }
 
 void features::c_esp::process( SDK::UCanvas* Canvas )
@@ -335,8 +245,6 @@ void features::c_esp::process( SDK::UCanvas* Canvas )
   // Closest-to-crosshair target: marker on its head, and the FOV search
   // circle while the menu is open so the slider can be set against it.
   const SDK::FVector2D target_head = bestTarget( Canvas );
-
-  apply_aim( Canvas, target_head );
 
   if ( !features::menu->esp )
     return;
