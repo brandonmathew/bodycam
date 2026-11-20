@@ -252,7 +252,7 @@ void features::c_menu::draw_watermark( SDK::UCanvas* canvas )
 
 void features::c_menu::draw_menu( SDK::UCanvas* canvas )
 {
-	menu_row rows[ 20 ];
+	menu_row rows[ 32 ];
 	const int row_count = build_rows( *this, rows );
 	const float total_h = MenuHeaderH + rows_height( rows, row_count ) + MenuFooterH;
 
