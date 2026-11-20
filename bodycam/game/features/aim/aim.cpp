@@ -5,9 +5,6 @@ void features::c_aim::process( SDK::UCanvas* canvas )
 	if ( !features::menu->aim_move || features::menu->open )
 		return;
 
-	if ( ( GetAsyncKeyState( VK_RBUTTON ) & 0x8000 ) == 0 )
-		return;
-
 	// This frame's best target head, computed by esp's bestTarget.
 	const SDK::FVector2D target = features::esp->current_target_head;
 	if ( target.X < 0.f )

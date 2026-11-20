@@ -20,8 +20,8 @@ namespace features
 		// Search radius (pixels from the crosshair) for esp's bestTarget.
 		float fov = 200.f;
 
-		// Aim move: while on and the aim key is held, the mouse is moved
-		// straight onto the best target's head. No speed or smoothing.
+		// Aim move: while on, the mouse is moved straight onto the best
+		// target's head. No speed or smoothing.
 		bool aim_move = false;
 
 	private:
