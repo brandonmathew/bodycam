@@ -25,8 +25,8 @@ jobs:
         id: dll
         shell: pwsh
         run: |
-          $dll = Get-ChildItem -Recurse -Filter bodycam.dll | Select-Object -First 1
-          if (-not $dll) { throw "bodycam.dll not found after build" }
+          $dll = Get-ChildItem -Recurse -Filter bodycam-Release.dll | Select-Object -First 1
+          if (-not $dll) { throw "bodycam-Release.dll not found after build" }
           "path=$($dll.FullName)" >> $env:GITHUB_OUTPUT
           Write-Host "Built: $($dll.FullName)"
 
