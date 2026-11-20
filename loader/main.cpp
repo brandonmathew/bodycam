@@ -52,6 +52,7 @@ static constexpr UINT WM_DOWNLOAD_PROGRESS = WM_APP + 3;
 static constexpr UINT WM_RESULT_TEXT = WM_APP + 4;
 static constexpr int IDC_INJECT = 1001;
 static constexpr int IDC_PROGRESS = 1004;
+static constexpr int IDC_CLOSE = 1005;
 
 // ---------------------------------------------------------------------------
 // Log - quiet by default. With --debug the loader opens a console and the
@@ -902,6 +903,7 @@ static int g_ProgressPercent = 0;
 static bool g_ProgressMarquee = false;
 static int g_MarqueePhase = 0;
 static bool g_ButtonHover = false;
+static bool g_CloseHover = false;
 
 // --- progress bar (custom painted) ---
 
@@ -963,9 +965,10 @@ static LRESULT CALLBACK ProgressProc(HWND Window, UINT Message, WPARAM WParam, L
 static LRESULT CALLBACK ButtonSubclass(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam,
     UINT_PTR, DWORD_PTR)
 {
-    if (Message == WM_MOUSEMOVE && !g_ButtonHover)
+    bool& Hover = GetDlgCtrlID(Window) == IDC_CLOSE ? g_CloseHover : g_ButtonHover;
+    if (Message == WM_MOUSEMOVE && !Hover)
     {
-        g_ButtonHover = true;
+        Hover = true;
         TRACKMOUSEEVENT Tme = {};
         Tme.cbSize = sizeof(Tme);
         Tme.dwFlags = TME_LEAVE;
@@ -975,7 +978,7 @@ static LRESULT CALLBACK ButtonSubclass(HWND Window, UINT Message, WPARAM WParam,
     }
     else if (Message == WM_MOUSELEAVE)
     {
-        g_ButtonHover = false;
+        Hover = false;
         InvalidateRect(Window, nullptr, FALSE);
     }
     return DefSubclassProc(Window, Message, WParam, LParam);
@@ -1008,6 +1011,10 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         g_InjectButton = CreateWindowW(L"BUTTON", L"Inject", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
             372, 182, 108, 30, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
         SetWindowSubclass(g_InjectButton, ButtonSubclass, 1, 0);
+
+        HWND CloseButton = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            454, 0, 46, 52, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CLOSE)), nullptr, nullptr);
+        SetWindowSubclass(CloseButton, ButtonSubclass, 1, 0);
 
         SetTimer(Window, 1, 1000, nullptr);
         RefreshStatus();
@@ -1046,6 +1053,18 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         MoveToEx(Dc, 0, 168, nullptr);
         LineTo(Dc, Client.right, 168);
         DeleteObject(BorderPen);
+
+        // Outer frame
+        HBRUSH Frame = CreateSolidBrush(ColBorder);
+        RECT FrameTop = { 0, 0, Client.right, 1 };
+        RECT FrameBottom = { 0, Client.bottom - 1, Client.right, Client.bottom };
+        RECT FrameLeft = { 0, 0, 1, Client.bottom };
+        RECT FrameRight = { Client.right - 1, 0, Client.right, Client.bottom };
+        FillRect(Dc, &FrameTop, Frame);
+        FillRect(Dc, &FrameBottom, Frame);
+        FillRect(Dc, &FrameLeft, Frame);
+        FillRect(Dc, &FrameRight, Frame);
+        DeleteObject(Frame);
 
         // Accent edge, full height on the left (same as the game menu)
         RECT Edge = { 0, 0, 3, Client.bottom };
@@ -1098,9 +1117,40 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         return 0;
     }
 
+    case WM_NCHITTEST:
+    {
+        const LRESULT Hit = DefWindowProcW(Window, Message, WParam, LParam);
+        if (Hit == HTCLIENT)
+        {
+            POINT Pt = { static_cast<short>(LOWORD(LParam)), static_cast<short>(HIWORD(LParam)) };
+            ScreenToClient(Window, &Pt);
+            if (Pt.y < 52)
+                return HTCAPTION; // drag by the header; child controls keep their own clicks
+        }
+        return Hit;
+    }
+
     case WM_DRAWITEM:
     {
         const auto* Dis = reinterpret_cast<const DRAWITEMSTRUCT*>(LParam);
+        if (Dis->CtlID == IDC_CLOSE)
+        {
+            const COLORREF BgColor = g_CloseHover ? RGB(168, 44, 50) : ColHeader;
+            HBRUSH BgBrush = CreateSolidBrush(BgColor);
+            FillRect(Dis->hDC, &Dis->rcItem, BgBrush);
+            DeleteObject(BgBrush);
+
+            const int Cx = (Dis->rcItem.left + Dis->rcItem.right) / 2;
+            const int Cy = (Dis->rcItem.top + Dis->rcItem.bottom) / 2;
+            HPEN XPen = CreatePen(PS_SOLID, 2, g_CloseHover ? RGB(255, 255, 255) : ColMuted);
+            SelectObject(Dis->hDC, XPen);
+            MoveToEx(Dis->hDC, Cx - 6, Cy - 6, nullptr);
+            LineTo(Dis->hDC, Cx + 6, Cy + 6);
+            MoveToEx(Dis->hDC, Cx + 6, Cy - 6, nullptr);
+            LineTo(Dis->hDC, Cx - 6, Cy + 6);
+            DeleteObject(XPen);
+            return TRUE;
+        }
         if (Dis->CtlID != IDC_INJECT)
             break;
 
@@ -1133,6 +1183,11 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
     }
 
     case WM_COMMAND:
+        if (LOWORD(WParam) == IDC_CLOSE && HIWORD(WParam) == BN_CLICKED)
+        {
+            DestroyWindow(Window);
+            return 0;
+        }
         if (LOWORD(WParam) == IDC_INJECT && HIWORD(WParam) == BN_CLICKED && !g_Busy)
         {
             g_Busy = true;
@@ -1256,19 +1311,19 @@ int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, wchar_t*, int ShowCmd)
     RegisterClassW(&Class);
 
     RECT Desired = { 0, 0, 500, 226 };
-    AdjustWindowRect(&Desired, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
+    AdjustWindowRect(&Desired, WS_POPUP, FALSE);
 
-    g_Window = CreateWindowExW(0, Class.lpszClassName, L"Bodycam Loader",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+    g_Window = CreateWindowExW(WS_EX_APPWINDOW, Class.lpszClassName, L"Bodycam Loader",
+        WS_POPUP,
         CW_USEDEFAULT, CW_USEDEFAULT,
         Desired.right - Desired.left, Desired.bottom - Desired.top,
         nullptr, nullptr, Instance, nullptr);
     if (!g_Window)
         return 1;
 
-    // Dark title bar to match the window.
-    const BOOL Dark = TRUE;
-    DwmSetWindowAttribute(g_Window, 20, &Dark, sizeof(Dark));
+    // Soft shadow for the borderless window.
+    const MARGINS Shadow = { 1, 1, 1, 1 };
+    DwmExtendFrameIntoClientArea(g_Window, &Shadow);
 
     ShowWindow(g_Window, ShowCmd);
     UpdateWindow(g_Window);
