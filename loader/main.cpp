@@ -1088,7 +1088,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         const int BuildLen = swprintf(Build, _countof(Build), L"build %hs", LOADER_BUILD_SHA);
         SIZE BuildSize = {};
         GetTextExtentPoint32W(Dc, Build, BuildLen, &BuildSize);
-        TextOutW(Dc, Client.right - 20 - BuildSize.cx, 20, Build, BuildLen);
+        TextOutW(Dc, Client.right - 58 - BuildSize.cx, 20, Build, BuildLen);
 
         // Game status
         SelectObject(Dc, g_FontSmall);
