@@ -14,6 +14,7 @@
 #include "game/sdk/SDK/Engine_classes.hpp"
 #include "game/sdk/SDK/UMG_classes.hpp"
 #include "game/sdk/SDK/ALS_Base_CharacterBP_classes.hpp"
+#include "game/sdk/SDK/ALS_AnimBP_classes.hpp"
 #include "game/sdk/SDK/ALS_AnimMan_CharacterBP_classes.hpp"
 #include "game/sdk/SDK/WW_SurvivorStatus_classes.hpp"
 #include "game/sdk/SDK/AI_Humanoid_classes.hpp"

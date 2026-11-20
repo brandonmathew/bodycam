@@ -9,7 +9,9 @@ static constexpr float MenuHeaderH = 40.f;
 static constexpr float MenuRowH = 28.f;
 static constexpr float MenuFooterH = 26.f;
 static constexpr float MenuPad = 16.f;
-static constexpr int MenuItemCount = 6;
+static constexpr int MenuToggleCount = 7;
+static constexpr int MenuSliderCount = 3;
+static constexpr int MenuItemCount = MenuToggleCount + MenuSliderCount;
 
 // Palette: dark charcoal panel, one restrained blue accent, soft grays.
 static const SDK::FLinearColor ColPanel{ 0.075f, 0.082f, 0.094f, 0.96f };
@@ -34,6 +36,31 @@ static SDK::APlayerController* get_local_controller( )
 
 	return local_player->PlayerController;
 }
+
+// The local player's ALS animation instance, or nullptr when not in a
+// match / the pawn is not the ALS character / the anim class differs.
+static SDK::UALS_AnimBP_C* get_local_animbp( )
+{
+	SDK::APlayerController* const controller = get_local_controller( );
+	if ( !controller || !controller->AcknowledgedPawn )
+		return nullptr;
+
+	SDK::AALS_Base_CharacterBP_C* const character = static_cast< SDK::AALS_Base_CharacterBP_C* >( controller->AcknowledgedPawn );
+	if ( !character->IsA( SDK::AALS_Base_CharacterBP_C::StaticClass( ) ) || !character->Mesh || !character->Mesh->AnimScriptInstance )
+		return nullptr;
+
+	SDK::UAnimInstance* const anim = character->Mesh->AnimScriptInstance;
+	if ( !anim->IsA( SDK::UALS_AnimBP_C::StaticClass( ) ) )
+		return nullptr;
+
+	return static_cast< SDK::UALS_AnimBP_C* >( anim );
+}
+
+// Slider geometry, shared by drawing and mouse handling.
+static float slider_track_x0( ) { return MenuX + 118.f; }
+static float slider_track_x1( ) { return MenuX + MenuW - MenuPad - 46.f; }
+
+static float clampf( float v, float lo, float hi ) { return v < lo ? lo : ( v > hi ? hi : v ); }
 
 // True only on the frame the key goes down, not while it is held.
 static bool key_just_pressed( int key )
@@ -108,6 +135,7 @@ void features::c_menu::handle_input( )
 	if ( !open )
 	{
 		hovered_item = -1;
+		dragging_slider = -1;
 		return;
 	}
 
@@ -135,18 +163,90 @@ void features::c_menu::handle_input( )
 		}
 	}
 
-	if ( hovered_item >= 0 && key_just_pressed( VK_LBUTTON ) )
+	// Slider drag: while the button is held, the value follows the mouse.
+	if ( dragging_slider >= 0 )
 	{
-		switch ( hovered_item )
+		if ( ( GetAsyncKeyState( VK_LBUTTON ) & 0x8000 ) == 0 )
 		{
-		case 0: esp = !esp; break;
-		case 1: box = !box; break;
-		case 2: skeleton = !skeleton; break;
-		case 3: health = !health; break;
-		case 4: visibility_check = !visibility_check; break;
-		case 5: team_check = !team_check; break;
+			dragging_slider = -1;
+		}
+		else
+		{
+			const float fraction = clampf( ( mouse_x - slider_track_x0( ) ) / ( slider_track_x1( ) - slider_track_x0( ) ), 0.f, 1.f );
+			switch ( dragging_slider )
+			{
+			case 0: ads_in = fraction * 1.f; break;
+			case 1: ads_out = fraction * 1.f; break;
+			case 2: interp_speed = fraction * 50.f; break;
+			}
 		}
 	}
+
+	if ( hovered_item >= 0 && key_just_pressed( VK_LBUTTON ) )
+	{
+		if ( hovered_item < MenuToggleCount )
+		{
+			switch ( hovered_item )
+			{
+			case 0: esp = !esp; break;
+			case 1: box = !box; break;
+			case 2: skeleton = !skeleton; break;
+			case 3: health = !health; break;
+			case 4: visibility_check = !visibility_check; break;
+			case 5: team_check = !team_check; break;
+			case 6: aim_tuning = !aim_tuning; break;
+			}
+		}
+		else
+		{
+			dragging_slider = hovered_item - MenuToggleCount;
+		}
+	}
+}
+
+void features::c_menu::apply_aim_tuning( )
+{
+	SDK::UALS_AnimBP_C* const anim = get_local_animbp( );
+
+	if ( !aim_tuning )
+	{
+		// Restore the game's own values on the instance we changed.
+		if ( aim_applied && anim && anim == aim_instance )
+		{
+			anim->ADS_in_TIme = orig_ads_in;
+			anim->ADS_Out_Time = orig_ads_out;
+			anim->SmoothedAimingRotationInterpSpeed = orig_interp;
+		}
+		aim_applied = false;
+		aim_instance = nullptr;
+		return;
+	}
+
+	if ( !anim )
+		return;
+
+	if ( anim != aim_instance )
+	{
+		// New instance (spawn / respawn / new match): remember its defaults
+		// for a later restore, and seed the sliders from them once.
+		orig_ads_in = anim->ADS_in_TIme;
+		orig_ads_out = anim->ADS_Out_Time;
+		orig_interp = anim->SmoothedAimingRotationInterpSpeed;
+		aim_instance = anim;
+
+		if ( !sliders_seeded )
+		{
+			ads_in = clampf( static_cast< float >( orig_ads_in ), 0.f, 1.f );
+			ads_out = clampf( static_cast< float >( orig_ads_out ), 0.f, 1.f );
+			interp_speed = clampf( static_cast< float >( orig_interp ), 0.f, 50.f );
+			sliders_seeded = true;
+		}
+	}
+
+	anim->ADS_in_TIme = ads_in;
+	anim->ADS_Out_Time = ads_out;
+	anim->SmoothedAimingRotationInterpSpeed = interp_speed;
+	aim_applied = true;
 }
 
 void features::c_menu::draw_watermark( SDK::UCanvas* canvas )
@@ -175,16 +275,17 @@ void features::c_menu::draw_menu( SDK::UCanvas* canvas )
 	draw_text( canvas, L"MENU", MenuX + MenuW - MenuPad - 30.f, MenuY + 13.f, ColMuted );
 
 	struct item { const wchar_t* name; bool* value; };
-	const item items[ MenuItemCount ] = {
+	const item items[ MenuToggleCount ] = {
 		{ L"ESP",              &esp },
 		{ L"Box",              &box },
 		{ L"Skeleton",         &skeleton },
 		{ L"Health",           &health },
 		{ L"Visibility check", &visibility_check },
 		{ L"Team check",       &team_check },
+		{ L"Aim tuning",       &aim_tuning },
 	};
 
-	for ( int i = 0; i < MenuItemCount; i++ )
+	for ( int i = 0; i < MenuToggleCount; i++ )
 	{
 		const float row_y = MenuY + MenuHeaderH + MenuRowH * static_cast< float >( i );
 
@@ -193,6 +294,37 @@ void features::c_menu::draw_menu( SDK::UCanvas* canvas )
 
 		draw_text( canvas, items[ i ].name, MenuX + MenuPad + 4.f, row_y + 8.f, ColText );
 		draw_toggle( canvas, MenuX + MenuW - MenuPad - 36.f, row_y + 5.f, *items[ i ].value );
+	}
+
+	// Slider rows: label, track with accent fill and knob, value at the
+	// right. Labels dim while Aim tuning is off (values apply when on).
+	struct slider { const wchar_t* name; float value; float min; float max; const wchar_t* format; };
+	const slider sliders[ MenuSliderCount ] = {
+		{ L"ADS in",       ads_in,       0.f, 1.f,  L"%.2f" },
+		{ L"ADS out",      ads_out,      0.f, 1.f,  L"%.2f" },
+		{ L"Interp speed", interp_speed, 0.f, 50.f, L"%.1f" },
+	};
+
+	for ( int i = 0; i < MenuSliderCount; i++ )
+	{
+		const int row = MenuToggleCount + i;
+		const float row_y = MenuY + MenuHeaderH + MenuRowH * static_cast< float >( row );
+
+		if ( row == hovered_item || dragging_slider == i )
+			fill_rect( canvas, MenuX + 6.f, row_y + 2.f, MenuW - 12.f, MenuRowH - 4.f, ColHover );
+
+		const SDK::FLinearColor& label_color = aim_tuning ? ColText : ColMuted;
+		draw_text( canvas, sliders[ i ].name, MenuX + MenuPad + 4.f, row_y + 8.f, label_color );
+
+		const float fraction = ( sliders[ i ].value - sliders[ i ].min ) / ( sliders[ i ].max - sliders[ i ].min );
+		const float track_w = slider_track_x1( ) - slider_track_x0( );
+		fill_rect( canvas, slider_track_x0( ), row_y + 11.f, track_w, 6.f, ColTrackOff );
+		fill_rect( canvas, slider_track_x0( ), row_y + 11.f, track_w * fraction, 6.f, ColAccent );
+		fill_rect( canvas, slider_track_x0( ) + track_w * fraction - 4.f, row_y + 7.f, 8.f, 14.f, ColKnob );
+
+		wchar_t value_text[ 16 ] = { };
+		swprintf( value_text, 16, sliders[ i ].format, sliders[ i ].value );
+		draw_text( canvas, value_text, MenuX + MenuW - MenuPad - 32.f, row_y + 8.f, label_color );
 	}
 
 	// Footer with the two keys that matter.
@@ -216,6 +348,8 @@ void features::c_menu::process( SDK::UCanvas* canvas )
 	}
 
 	handle_input( );
+
+	apply_aim_tuning( );
 
 	draw_watermark( canvas );
 
