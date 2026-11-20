@@ -1005,6 +1005,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
     switch (Message)
     {
     case WM_CREATE:
+    {
         g_Progress = CreateWindowW(L"BodycamProgress", L"", WS_CHILD | WS_VISIBLE,
             20, 118, 460, 10, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROGRESS)), nullptr, nullptr);
 
@@ -1019,6 +1020,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         SetTimer(Window, 1, 1000, nullptr);
         RefreshStatus();
         return 0;
+    }
 
     case WM_TIMER:
         if (WParam == 3)
