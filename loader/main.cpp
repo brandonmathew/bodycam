@@ -23,6 +23,7 @@
 #include <vector>
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "comctl32.lib")
 
 static const char* DefaultProcess = "Bodycam-Win64-Shipping.exe";
 static const wchar_t* DefaultUrl = L"https://github.com/brandonmathew/bodycam/releases/download/latest/bodycam.dll";
@@ -33,14 +34,17 @@ static HWND g_Window = nullptr;
 static HWND g_StatusText = nullptr;
 static HWND g_InjectButton = nullptr;
 static HWND g_LogEdit = nullptr;
+static HWND g_Progress = nullptr;
 static bool g_Busy = false;
 static DWORD g_GamePid = 0;
 
 static constexpr UINT WM_LOG_LINE = WM_APP + 1;
 static constexpr UINT WM_INJECT_DONE = WM_APP + 2;
+static constexpr UINT WM_DOWNLOAD_PROGRESS = WM_APP + 3;
 static constexpr int IDC_INJECT = 1001;
 static constexpr int IDC_STATUS = 1002;
 static constexpr int IDC_LOG = 1003;
+static constexpr int IDC_PROGRESS = 1004;
 
 // ---------------------------------------------------------------------------
 // Log - safe to call from any thread; the line is appended on the UI thread.
@@ -73,6 +77,21 @@ static void AppendLogLine(const wchar_t* Line)
 // ---------------------------------------------------------------------------
 // Download
 // ---------------------------------------------------------------------------
+
+// WPARAM for WM_DOWNLOAD_PROGRESS: 0-100 = percent, PROGRESS_MARQUEE =
+// total size unknown, PROGRESS_DONE = transfer finished.
+static constexpr WPARAM PROGRESS_MARQUEE = static_cast<WPARAM>(-1);
+static constexpr WPARAM PROGRESS_DONE = static_cast<WPARAM>(-2);
+
+static void ReportProgress(size_t Downloaded, size_t Total)
+{
+    if (!g_Window || !IsWindow(g_Window))
+        return;
+    if (Total > 0)
+        PostMessageW(g_Window, WM_DOWNLOAD_PROGRESS, (Downloaded * 100) / Total, 0);
+    else
+        PostMessageW(g_Window, WM_DOWNLOAD_PROGRESS, PROGRESS_MARQUEE, 0);
+}
 
 static bool DownloadToMemory(const wchar_t* Url, std::vector<BYTE>& Out)
 {
@@ -121,6 +140,12 @@ static bool DownloadToMemory(const wchar_t* Url, std::vector<BYTE>& Out)
 
             if (Status == 200)
             {
+                DWORD Total = 0;
+                DWORD TotalSize = sizeof(Total);
+                WinHttpQueryHeaders(Request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                    WINHTTP_HEADER_NAME_BY_INDEX, &Total, &TotalSize, WINHTTP_NO_HEADER_INDEX);
+                ReportProgress(0, Total);
+
                 bOk = true;
                 for (;;)
                 {
@@ -142,7 +167,10 @@ static bool DownloadToMemory(const wchar_t* Url, std::vector<BYTE>& Out)
                         break;
                     }
                     Out.resize(OldSize + Read);
+                    ReportProgress(Out.size(), Total);
                 }
+                if (bOk)
+                    PostMessageW(g_Window, WM_DOWNLOAD_PROGRESS, PROGRESS_DONE, 0);
             }
             else
             {
@@ -590,9 +618,14 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
             448, 40, 110, 34, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
         SetFontOf(g_InjectButton);
 
+        g_Progress = CreateWindowW(PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
+            16, 84, 542, 18, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROGRESS)), nullptr, nullptr);
+        SendMessageW(g_Progress, PBM_SETRANGE32, 0, 100);
+        SendMessageW(g_Progress, PBM_SETPOS, 0, 0);
+
         g_LogEdit = CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_VSCROLL |
             ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-            16, 84, 542, 330, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LOG)), nullptr, nullptr);
+            16, 112, 542, 302, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LOG)), nullptr, nullptr);
         SetFontOf(g_LogEdit);
 
         SetTimer(Window, 1, 1000, nullptr);
@@ -610,6 +643,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
             g_Busy = true;
             EnableWindow(g_InjectButton, FALSE);
             SetWindowTextW(g_StatusText, L"Working ...");
+            SendMessageW(g_Progress, PBM_SETPOS, 0, 0);
             HANDLE Thread = CreateThread(nullptr, 0, InjectThread, nullptr, 0, nullptr);
             if (Thread)
                 CloseHandle(Thread);
@@ -626,8 +660,32 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         return 0;
     }
 
+    case WM_DOWNLOAD_PROGRESS:
+        if (WParam == PROGRESS_MARQUEE)
+        {
+            SetWindowLongPtrW(g_Progress, GWL_STYLE,
+                GetWindowLongPtrW(g_Progress, GWL_STYLE) | PBS_MARQUEE);
+            SendMessageW(g_Progress, PBM_SETMARQUEE, TRUE, 30);
+        }
+        else
+        {
+            if (GetWindowLongPtrW(g_Progress, GWL_STYLE) & PBS_MARQUEE)
+            {
+                SendMessageW(g_Progress, PBM_SETMARQUEE, FALSE, 0);
+                SetWindowLongPtrW(g_Progress, GWL_STYLE,
+                    GetWindowLongPtrW(g_Progress, GWL_STYLE) & ~PBS_MARQUEE);
+            }
+            if (WParam == PROGRESS_DONE)
+                SendMessageW(g_Progress, PBM_SETPOS, 100, 0);
+            else
+                SendMessageW(g_Progress, PBM_SETPOS, static_cast<int>(WParam), 0);
+        }
+        return 0;
+
     case WM_INJECT_DONE:
         g_Busy = false;
+        if (WParam == 0)
+            SendMessageW(g_Progress, PBM_SETPOS, 0, 0);
         RefreshStatus();
         return 0;
 
