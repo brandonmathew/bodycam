@@ -1,0 +1,41 @@
+name: Build loader
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'loader/**'
+      - '.github/workflows/build-loader.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        run: msbuild loader\loader.vcxproj /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Find the exe
+        id: exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter loader.exe | Select-Object -First 1
+          if (-not $exe) { throw "loader.exe not found after build" }
+          "path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "Built: $($exe.FullName)"
+
+      - name: Add loader.exe to the latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          prerelease: true
+          files: ${{ steps.exe.outputs.path }}
