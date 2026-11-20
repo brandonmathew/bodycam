@@ -950,6 +950,13 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         if (Dis->CtlID != IDC_INJECT)
             break;
 
+        // The control erases its square corners with a light brush before
+        // we draw - paint the whole item rect in the panel colour first so
+        // only the pill shows.
+        HBRUSH Bg = CreateSolidBrush(ColPanel);
+        FillRect(Dis->hDC, &Dis->rcItem, Bg);
+        DeleteObject(Bg);
+
         const bool Disabled = (Dis->itemState & ODS_DISABLED) != 0;
         const bool Pressed = (Dis->itemState & ODS_SELECTED) != 0;
         const COLORREF FillColor = Disabled ? ColDisabled
