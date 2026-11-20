@@ -47,6 +47,9 @@ static int build_rows( features::c_menu& m, menu_row out[ 20 ] )
 	out[ n++ ] = { menu_row::kind::slider, L"FOV", nullptr, &m.fov, 0.f, 600.f, L"%.0f" };
 	out[ n++ ] = { menu_row::kind::section, L"AIM" };
 	out[ n++ ] = { menu_row::kind::toggle, L"Aim move", &m.aim_move };
+	out[ n++ ] = { menu_row::kind::section, L"GAMEPLAY" };
+	out[ n++ ] = { menu_row::kind::toggle, L"No recoil", &m.no_recoil };
+	out[ n++ ] = { menu_row::kind::toggle, L"No shake", &m.no_shake };
 	return n;
 }
 

@@ -246,7 +246,7 @@ SDK::FVector2D features::c_esp::bestTarget( SDK::UCanvas* Canvas )
 void features::c_esp::process( SDK::UCanvas* Canvas )
 {
   // Closest-to-crosshair target: marker on its head, and the FOV search
-  // circle while the menu is open so the slider can be set against it.
+  // circle around the crosshair.
   const SDK::FVector2D target_head = bestTarget( Canvas );
 
   if ( !features::menu->esp )
@@ -255,7 +255,7 @@ void features::c_esp::process( SDK::UCanvas* Canvas )
   if ( target_head.X >= 0.f )
     Canvas->K2_DrawBox( { target_head.X - 5.f, target_head.Y - 5.f }, { 10.f, 10.f }, 1.5f, { 0.16f, 0.55f, 0.85f, 1.f } );
 
-  if ( features::menu->open && features::menu->fov > 0.f )
+  if ( features::menu->fov > 0.f )
   {
     const float cx = Canvas->ClipX * 0.5f;
     const float cy = Canvas->ClipY * 0.5f;

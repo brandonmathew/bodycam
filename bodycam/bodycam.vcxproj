@@ -173,6 +173,7 @@
     <ClInclude Include="core\utils\logger\logger.h" />
     <ClInclude Include="game\features\esp\esp.h" />
     <ClInclude Include="game\features\aim\aim.h" />
+    <ClInclude Include="game\features\misc\misc.h" />
     <ClInclude Include="game\features\menu\menu.h" />
     <ClInclude Include="game\features\features.h" />
     <ClInclude Include="game\hooked\hooked.h" />
@@ -193,6 +194,7 @@
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game\features\esp\esp.cpp" />
     <ClCompile Include="game\features\aim\aim.cpp" />
+    <ClCompile Include="game\features\misc\misc.cpp" />
     <ClCompile Include="game\features\menu\menu.cpp" />
     <ClCompile Include="game\hooked\hooked.cpp" />
     <ClCompile Include="game\sdk\SDK\Basic.cpp" />

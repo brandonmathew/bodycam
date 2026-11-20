@@ -24,6 +24,9 @@ namespace features
 		// target's head. No speed or smoothing.
 		bool aim_move = false;
 
+		bool no_recoil = false;
+		bool no_shake = false;
+
 	private:
 		void handle_input( );
 		void draw_watermark( SDK::UCanvas* canvas );

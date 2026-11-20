@@ -18,6 +18,7 @@
 #include "game/sdk/SDK/WW_SurvivorStatus_classes.hpp"
 #include "game/sdk/SDK/AI_Humanoid_classes.hpp"
 #include "game/sdk/SDK/PS_Bodycam_classes.hpp"
+#include "game/sdk/SDK/WEP_classes.hpp"
 
 #include "game/hooked/hooked.h"
 
