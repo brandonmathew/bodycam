@@ -211,7 +211,7 @@ SDK::FVector2D features::c_esp::bestTarget( SDK::UCanvas* Canvas )
     // Head position: the head socket when the mesh has one, else the top
     // of the capsule (same +85 the ESP box uses).
     SDK::FVector head_world;
-    if ( !bone_world( player, 5, head_world ) )
+    if ( !bone_world( player, features::menu->aim_chest ? 3 : 5, head_world ) )
     {
       const SDK::FVector loc = current_actor->RootComponent->RelativeLocation;
       head_world = { loc.X, loc.Y, loc.Z + 85.f };
@@ -254,6 +254,31 @@ void features::c_esp::process( SDK::UCanvas* Canvas )
 
   if ( target_head.X >= 0.f )
     Canvas->K2_DrawBox( { target_head.X - 5.f, target_head.Y - 5.f }, { 10.f, 10.f }, 1.5f, { 0.16f, 0.55f, 0.85f, 1.f } );
+
+  if ( features::menu->aim_line && target_head.X >= 0.f )
+    Canvas->K2_DrawLine( { Canvas->ClipX * 0.5f, Canvas->ClipY * 0.5f }, target_head, 1.f, { 1.f, 0.25f, 0.25f, 1.f } );
+
+  // World objectives: drones and the bomb, labelled at their location.
+  SDK::UWorld* const obj_world = SDK::UWorld::GetWorld( );
+  if ( ( features::menu->drone_esp || features::menu->bomb_esp ) && obj_world && obj_world->PersistentLevel )
+  {
+    for ( SDK::AActor* actor : obj_world->PersistentLevel->Actors )
+    {
+      if ( !actor )
+        continue;
+
+      const bool is_drone = features::menu->drone_esp && actor->IsA( SDK::ABP_Drone_C::StaticClass( ) );
+      const bool is_bomb = !is_drone && features::menu->bomb_esp && actor->IsA( SDK::ABombe_C::StaticClass( ) );
+      if ( !is_drone && !is_bomb )
+        continue;
+
+      const SDK::FVector screen = Canvas->K2_Project( actor->K2_GetActorLocation( ) );
+      if ( screen.Z <= 0.0 )
+        continue;
+
+      Canvas->K2_DrawText( SDK::UEngine::GetEngine( )->SmallFont, is_drone ? SDK::FString( L"Drone" ) : SDK::FString( L"Bomb" ), { screen.X, screen.Y }, { 1.f, 1.f }, is_drone ? SDK::FLinearColor{ 1.f, 0.9f, 0.2f, 1.f } : SDK::FLinearColor{ 1.f, 0.25f, 0.25f, 1.f }, 0.f, { 0.f, 0.f, 0.f, 1.f }, { 1.f, 1.f }, true, false, true, { 0.f, 0.f, 0.f, 1.f } );
+    }
+  }
 
   if ( features::menu->fov > 0.f )
   {

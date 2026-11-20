@@ -34,7 +34,7 @@ struct menu_row
 	const bool* dim_until = nullptr; // slider label dims while this is false
 };
 
-static int build_rows( features::c_menu& m, menu_row out[ 20 ] )
+static int build_rows( features::c_menu& m, menu_row out[ 32 ] )
 {
 	int n = 0;
 	out[ n++ ] = { menu_row::kind::section, L"VISUALS" };
@@ -45,11 +45,29 @@ static int build_rows( features::c_menu& m, menu_row out[ 20 ] )
 	out[ n++ ] = { menu_row::kind::toggle, L"Visibility check", &m.visibility_check };
 	out[ n++ ] = { menu_row::kind::toggle, L"Team check", &m.team_check };
 	out[ n++ ] = { menu_row::kind::slider, L"FOV", nullptr, &m.fov, 0.f, 600.f, L"%.0f" };
+	out[ n++ ] = { menu_row::kind::toggle, L"Drones", &m.drone_esp };
+	out[ n++ ] = { menu_row::kind::toggle, L"Bomb", &m.bomb_esp };
 	out[ n++ ] = { menu_row::kind::section, L"AIM" };
 	out[ n++ ] = { menu_row::kind::toggle, L"Aim move", &m.aim_move };
+	out[ n++ ] = { menu_row::kind::toggle, L"Aim line", &m.aim_line };
+	out[ n++ ] = { menu_row::kind::toggle, L"Chest hitbox", &m.aim_chest };
 	out[ n++ ] = { menu_row::kind::section, L"GAMEPLAY" };
 	out[ n++ ] = { menu_row::kind::toggle, L"No recoil", &m.no_recoil };
 	out[ n++ ] = { menu_row::kind::toggle, L"No shake", &m.no_shake };
+	out[ n++ ] = { menu_row::kind::toggle, L"No flash", &m.no_flash };
+	out[ n++ ] = { menu_row::kind::toggle, L"God mode", &m.god_mode };
+	out[ n++ ] = { menu_row::kind::toggle, L"View FOV", &m.view_fov };
+	out[ n++ ] = { menu_row::kind::slider, L"View FOV value", nullptr, &m.view_fov_value, 90.f, 160.f, L"%.0f", &m.view_fov };
+	out[ n++ ] = { menu_row::kind::toggle, L"Gravity", &m.gravity };
+	out[ n++ ] = { menu_row::kind::slider, L"Gravity value", nullptr, &m.gravity_value, -1.f, 3.f, L"%.1f", &m.gravity };
+	out[ n++ ] = { menu_row::kind::section, L"WEAPON" };
+	out[ n++ ] = { menu_row::kind::toggle, L"Unlimited ammo", &m.unlimited_ammo };
+	out[ n++ ] = { menu_row::kind::toggle, L"Rapid fire", &m.rapid_fire };
+	out[ n++ ] = { menu_row::kind::slider, L"Rapid fire rate", nullptr, &m.rapid_fire_value, 0.02f, 1.f, L"%.2f", &m.rapid_fire };
+	out[ n++ ] = { menu_row::kind::toggle, L"Full auto", &m.full_auto };
+	out[ n++ ] = { menu_row::kind::toggle, L"Instant kill", &m.instant_kill };
+	out[ n++ ] = { menu_row::kind::toggle, L"Insta aim", &m.insta_aim };
+	out[ n++ ] = { menu_row::kind::toggle, L"No aim restrictions", &m.no_aim_restrictions };
 	return n;
 }
 
@@ -172,7 +190,7 @@ void features::c_menu::handle_input( )
 		return;
 	}
 
-	menu_row rows[ 20 ];
+	menu_row rows[ 32 ];
 	const int row_count = build_rows( *this, rows );
 
 	// Hover: the toggle/slider row under the mouse (sections don't hover).

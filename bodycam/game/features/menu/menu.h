@@ -26,6 +26,31 @@ namespace features
 
 		bool no_recoil = false;
 		bool no_shake = false;
+		bool no_flash = false;
+		bool god_mode = false;
+
+		bool view_fov = false;
+		float view_fov_value = 120.f;
+
+		bool gravity = false;
+		float gravity_value = 1.f;
+
+		// Weapon (all written to the local player's WEP / its Wep_Info)
+		bool unlimited_ammo = false;
+		bool rapid_fire = false;
+		float rapid_fire_value = 0.11f;
+		bool full_auto = false;
+		bool instant_kill = false;
+		bool insta_aim = false;
+		bool no_aim_restrictions = false;
+
+		// Aim extras
+		bool aim_line = false;
+		bool aim_chest = false;
+
+		// World ESP
+		bool drone_esp = false;
+		bool bomb_esp = false;
 
 	private:
 		void handle_input( );

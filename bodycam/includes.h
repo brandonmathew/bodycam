@@ -19,6 +19,12 @@
 #include "game/sdk/SDK/AI_Humanoid_classes.hpp"
 #include "game/sdk/SDK/PS_Bodycam_classes.hpp"
 #include "game/sdk/SDK/WEP_classes.hpp"
+#include "game/sdk/SDK/STR_WEP_structs.hpp"
+#include "game/sdk/SDK/STR_RECOIL_structs.hpp"
+#include "game/sdk/SDK/STR_WEP_ANIMATION_structs.hpp"
+#include "game/sdk/SDK/EN_FireMode_structs.hpp"
+#include "game/sdk/SDK/BP_Drone_classes.hpp"
+#include "game/sdk/SDK/Bombe_classes.hpp"
 
 #include "game/hooked/hooked.h"
 
