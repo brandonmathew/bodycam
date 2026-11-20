@@ -15,6 +15,7 @@ namespace features
 		SDK::FVector2D bestTarget( SDK::UCanvas* canvas );
 		SDK::AALS_Base_CharacterBP_C* current_target = nullptr;
 		SDK::FVector2D current_target_head = { -1.f, -1.f };
+		SDK::FVector current_target_head_world = { 0.f, 0.f, 0.f };
 	};
 	inline const std::unique_ptr< c_esp > esp = std::make_unique< c_esp >( );
 }

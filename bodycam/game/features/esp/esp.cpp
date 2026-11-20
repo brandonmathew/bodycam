@@ -188,6 +188,7 @@ SDK::FVector2D features::c_esp::bestTarget( SDK::UCanvas* Canvas )
   float best_dist_sq = fov * fov;
 
   SDK::FVector2D best_point = { -1.f, -1.f };
+  SDK::FVector best_head_world = { 0.f, 0.f, 0.f };
 
   for ( SDK::AActor* current_actor : world->PersistentLevel->Actors )
   {
@@ -232,11 +233,13 @@ SDK::FVector2D features::c_esp::bestTarget( SDK::UCanvas* Canvas )
     {
       best_dist_sq = dist_sq;
       best_point = { screen.X, screen.Y };
+      best_head_world = head_world;
       current_target = player;
     }
   }
 
   current_target_head = best_point;
+  current_target_head_world = best_head_world;
   return best_point;
 }
 
