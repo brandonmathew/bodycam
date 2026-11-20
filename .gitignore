@@ -6,3 +6,6 @@ Release/
 *.suo
 *.VC.db
 *.opendb
+
+loader/version.h
+loader-version.txt

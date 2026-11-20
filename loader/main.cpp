@@ -28,6 +28,13 @@
 #pragma comment(lib, "dwmapi.lib")
 #include <dwmapi.h>
 
+#if __has_include("version.h")
+#include "version.h"
+#endif
+#ifndef LOADER_BUILD_SHA
+#define LOADER_BUILD_SHA "dev"
+#endif
+
 static const char* DefaultProcess = "Bodycam-Win64-Shipping.exe";
 static const wchar_t* DefaultUrl = L"https://github.com/brandonmathew/bodycam/releases/download/latest/bodycam.dll";
 
@@ -727,6 +734,144 @@ static DWORD WINAPI InjectThread(void*)
 }
 
 // ---------------------------------------------------------------------------
+// Self-update (fully automatic)
+//
+// A running exe cannot be overwritten or deleted on Windows, but it CAN
+// be renamed - the image stays mapped under its new name. So the swap is:
+// write the new build as loader.exe.new, rename the running exe to
+// loader.exe.old, rename .new into place, relaunch, and let the new
+// process delete .old once the old one has exited. If the second rename
+// fails, .old is renamed back (rollback). The build SHA stamped in by the
+// workflow is compared against loader-version.txt in the release; "dev"
+// builds (no stamp) never update.
+// ---------------------------------------------------------------------------
+
+static const wchar_t* VersionUrl = L"https://github.com/brandonmathew/bodycam/releases/download/latest/loader-version.txt";
+static const wchar_t* LoaderUrl = L"https://github.com/brandonmathew/bodycam/releases/download/latest/loader.exe";
+
+static std::wstring OwnExePath()
+{
+    wchar_t Path[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, Path, MAX_PATH);
+    return Path;
+}
+
+static DWORD WINAPI UpdateThread(void*)
+{
+    const std::wstring Exe = OwnExePath();
+    const std::wstring Old = Exe + L".old";
+    const std::wstring New = Exe + L".new";
+
+    // Leftovers from a previous update. .old can stay locked for a moment
+    // while the previous process finishes exiting, so retry for a bit.
+    for (int i = 0; i < 10 && GetFileAttributesW(Old.c_str()) != INVALID_FILE_ATTRIBUTES; i++)
+    {
+        if (DeleteFileW(Old.c_str()))
+            break;
+        Sleep(300);
+    }
+    DeleteFileW(New.c_str());
+
+    if (strcmp(LOADER_BUILD_SHA, "dev") == 0)
+    {
+        Log(L"Dev build - self-update skipped.");
+        return 0;
+    }
+
+    std::vector<BYTE> VersionBytes;
+    if (!DownloadToMemory(VersionUrl, VersionBytes) || VersionBytes.empty())
+        return 0; // offline or unreachable - stay quiet, try again next launch
+
+    std::string RemoteSha(reinterpret_cast<const char*>(VersionBytes.data()), VersionBytes.size());
+    while (!RemoteSha.empty() && (RemoteSha.back() == '\n' || RemoteSha.back() == '\r' || RemoteSha.back() == ' '))
+        RemoteSha.pop_back();
+
+    if (RemoteSha.empty() || RemoteSha == LOADER_BUILD_SHA)
+    {
+        Log(L"Loader is current (build %hs).", LOADER_BUILD_SHA);
+        return 0;
+    }
+    if (g_Busy)
+    {
+        Log(L"Update to %hs postponed - injection in progress.", RemoteSha.c_str());
+        return 0;
+    }
+
+    Log(L"Updating loader %hs -> %hs ...", LOADER_BUILD_SHA, RemoteSha.c_str());
+    SetResult(L"Updating loader ...", 0);
+
+    std::vector<BYTE> ExeBytes;
+    if (!DownloadToMemory(LoaderUrl, ExeBytes) || ExeBytes.size() < sizeof(IMAGE_DOS_HEADER) ||
+        reinterpret_cast<const IMAGE_DOS_HEADER*>(ExeBytes.data())->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        Log(L"Update download failed.");
+        SetResult(L"Loader update failed - still on the current build.", 2);
+        return 0;
+    }
+
+    // Write the new build next to the current exe.
+    HANDLE File = CreateFileW(New.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (File == INVALID_HANDLE_VALUE)
+    {
+        SetResult(L"Loader update failed - still on the current build.", 2);
+        return 0;
+    }
+    DWORD Written = 0;
+    WriteFile(File, ExeBytes.data(), static_cast<DWORD>(ExeBytes.size()), &Written, nullptr);
+    CloseHandle(File);
+    if (Written != ExeBytes.size())
+    {
+        DeleteFileW(New.c_str());
+        SetResult(L"Loader update failed - still on the current build.", 2);
+        return 0;
+    }
+
+    // The rename swap.
+    DeleteFileW(Old.c_str());
+    if (!MoveFileExW(Exe.c_str(), Old.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        Log(L"Update: could not rename the running exe (%lu).", GetLastError());
+        DeleteFileW(New.c_str());
+        SetResult(L"Loader update failed - still on the current build.", 2);
+        return 0;
+    }
+    if (!MoveFileExW(New.c_str(), Exe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        Log(L"Update: could not move the new exe into place (%lu) - rolling back.", GetLastError());
+        MoveFileExW(Old.c_str(), Exe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        DeleteFileW(New.c_str());
+        SetResult(L"Loader update failed - still on the current build.", 2);
+        return 0;
+    }
+
+    // Relaunch the new build with the same arguments, then close.
+    std::wstring CmdLine = L"\"" + Exe + L"\"";
+    if (g_ProcessName != DefaultProcess)
+        CmdLine += L" \"" + ToWide(g_ProcessName) + L"\"";
+    if (g_Debug)
+        CmdLine += L" --debug";
+
+    STARTUPINFOW Si = {};
+    Si.cb = sizeof(Si);
+    PROCESS_INFORMATION Pi = {};
+    std::vector<wchar_t> CmdBuf(CmdLine.begin(), CmdLine.end());
+    CmdBuf.push_back(L'\0');
+    if (CreateProcessW(Exe.c_str(), CmdBuf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &Si, &Pi))
+    {
+        CloseHandle(Pi.hThread);
+        CloseHandle(Pi.hProcess);
+        Log(L"Updated - relaunching.");
+        PostMessageW(g_Window, WM_CLOSE, 0, 0);
+    }
+    else
+    {
+        Log(L"Update applied but relaunch failed (%lu).", GetLastError());
+        SetResult(L"Loader updated - restart it to finish.", 1);
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Window - dark theme matching the in-game menu: charcoal panel, header
 // band, 3px blue accent edge, accent colour for the action button and the
 // progress fill.
@@ -914,6 +1059,15 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         SelectObject(Dc, g_FontTitle);
         SetTextColor(Dc, ColText);
         TextOutW(Dc, 20, 15, L"Bodycam Loader", 14);
+
+        // Build stamp, right side of the header
+        SelectObject(Dc, g_FontSmall);
+        SetTextColor(Dc, ColMuted);
+        wchar_t Build[64];
+        const int BuildLen = swprintf(Build, _countof(Build), L"build %hs", LOADER_BUILD_SHA);
+        SIZE BuildSize = {};
+        GetTextExtentPoint32W(Dc, Build, BuildLen, &BuildSize);
+        TextOutW(Dc, Client.right - 20 - BuildSize.cx, 20, Build, BuildLen);
 
         // Game status
         SelectObject(Dc, g_FontSmall);
@@ -1118,6 +1272,10 @@ int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, wchar_t*, int ShowCmd)
 
     ShowWindow(g_Window, ShowCmd);
     UpdateWindow(g_Window);
+
+    HANDLE UpdateCheck = CreateThread(nullptr, 0, UpdateThread, nullptr, 0, nullptr);
+    if (UpdateCheck)
+        CloseHandle(UpdateCheck);
 
     MSG Msg = {};
     while (GetMessageW(&Msg, nullptr, 0, 0) > 0)

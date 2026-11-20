@@ -20,6 +20,14 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
+      - name: Stamp the build SHA into the loader
+        shell: pwsh
+        run: |
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          "#define LOADER_BUILD_SHA ""$sha""" | Out-File -Encoding ascii loader\version.h
+          $sha | Out-File -Encoding ascii loader-version.txt
+          Write-Host "Build SHA: $sha"
+
       - name: Build Release x64
         run: msbuild loader\loader.vcxproj /m /p:Configuration=Release /p:Platform=x64
 
@@ -38,4 +46,6 @@ jobs:
           tag_name: latest
           name: Latest build
           prerelease: true
-          files: ${{ steps.exe.outputs.path }}
+          files: |
+            ${{ steps.exe.outputs.path }}
+            loader-version.txt
