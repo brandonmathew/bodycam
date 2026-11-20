@@ -720,7 +720,7 @@ static DWORD WINAPI InjectThread(void*)
     CloseHandle(Process);
 
     Log(bOk ? L"Injected. Nothing was written to disk." : L"Injection failed.");
-    SetResult(bOk ? L"Injected. In game, press END to unload."
+    SetResult(bOk ? L"Injected. Closing in 5 seconds."
                   : L"Injection failed. Run with --debug for details.", bOk ? 1 : 2);
     PostMessageW(g_Window, WM_INJECT_DONE, bOk ? 1 : 0, 0);
     return 0;
@@ -751,7 +751,7 @@ static HFONT g_FontSmall = nullptr;
 static HFONT g_FontButton = nullptr;
 
 static bool g_StatusRunning = false;
-static std::wstring g_ResultText = L"Start the game, then press Inject.";
+static std::wstring g_ResultText;
 static int g_ResultKind = 0; // 0 neutral, 1 success, 2 failure
 static int g_ProgressPercent = 0;
 static bool g_ProgressMarquee = false;
@@ -861,7 +861,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
             20, 118, 460, 10, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PROGRESS)), nullptr, nullptr);
 
         g_InjectButton = CreateWindowW(L"BUTTON", L"Inject", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_OWNERDRAW,
-            350, 192, 130, 38, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
+            372, 182, 108, 30, Window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_INJECT)), nullptr, nullptr);
         SetWindowSubclass(g_InjectButton, ButtonSubclass, 1, 0);
 
         SetTimer(Window, 1, 1000, nullptr);
@@ -869,6 +869,12 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         return 0;
 
     case WM_TIMER:
+        if (WParam == 3)
+        {
+            KillTimer(Window, 3);
+            DestroyWindow(Window);
+            return 0;
+        }
         RefreshStatus();
         return 0;
 
@@ -892,8 +898,8 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         SelectObject(Dc, BorderPen);
         MoveToEx(Dc, 0, 52, nullptr);
         LineTo(Dc, Client.right, 52);
-        MoveToEx(Dc, 0, 176, nullptr);
-        LineTo(Dc, Client.right, 176);
+        MoveToEx(Dc, 0, 168, nullptr);
+        LineTo(Dc, Client.right, 168);
         DeleteObject(BorderPen);
 
         // Accent edge, full height on the left (same as the game menu)
@@ -934,12 +940,6 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         SetTextColor(Dc, g_ResultKind == 1 ? ColGreen : (g_ResultKind == 2 ? ColFail : ColMuted));
         TextOutW(Dc, 20, 140, g_ResultText.c_str(), static_cast<int>(g_ResultText.size()));
 
-        // Footer
-        SelectObject(Dc, g_FontSmall);
-        SetTextColor(Dc, ColMuted);
-        const wchar_t* Footer = L"Downloads the latest build into memory - nothing is written to disk.";
-        TextOutW(Dc, 20, 203, Footer, static_cast<int>(wcslen(Footer)));
-
         EndPaint(Window, &Ps);
         return 0;
     }
@@ -959,7 +959,7 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
         HPEN Pen = CreatePen(PS_SOLID, 1, FillColor);
         SelectObject(Dis->hDC, Brush);
         SelectObject(Dis->hDC, Pen);
-        RoundRect(Dis->hDC, Dis->rcItem.left, Dis->rcItem.top, Dis->rcItem.right, Dis->rcItem.bottom, 8, 8);
+        RoundRect(Dis->hDC, Dis->rcItem.left, Dis->rcItem.top, Dis->rcItem.right, Dis->rcItem.bottom, 30, 30);
         DeleteObject(Brush);
         DeleteObject(Pen);
 
@@ -1020,6 +1020,8 @@ static LRESULT CALLBACK WindowProc(HWND Window, UINT Message, WPARAM WParam, LPA
 
     case WM_INJECT_DONE:
         g_Busy = false;
+        if (WParam == 1)
+            SetTimer(Window, 3, 5000, nullptr);
         if (WParam == 0)
         {
             g_ProgressPercent = 0;
@@ -1092,7 +1094,7 @@ int WINAPI wWinMain(HINSTANCE Instance, HINSTANCE, wchar_t*, int ShowCmd)
     Class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassW(&Class);
 
-    RECT Desired = { 0, 0, 500, 248 };
+    RECT Desired = { 0, 0, 500, 226 };
     AdjustWindowRect(&Desired, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
 
     g_Window = CreateWindowExW(0, Class.lpszClassName, L"Bodycam Loader",
