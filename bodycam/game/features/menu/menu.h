@@ -25,6 +25,17 @@ namespace features
 		float ads_out = 0.25f;
 		float interp_speed = 10.f;
 
+		// Search radius (pixels from the crosshair) for esp's bestTarget.
+		float fov = 200.f;
+
+		// Aim move: while on and the aim key is held, the mouse is steered
+		// toward the best target's head with velocity smoothing.
+		// aim_speed caps the mouse speed; aim_smooth is the smoothing
+		// time in seconds (higher = softer acceleration and landing).
+		bool aim_move = false;
+		float aim_speed = 0.35f;
+		float aim_smooth = 0.08f;
+
 	private:
 		void handle_input( );
 		void apply_aim_tuning( );
@@ -33,7 +44,7 @@ namespace features
 		void free_mouse( );
 		void capture_mouse( );
 
-		int dragging_slider = -1;
+		int dragging_row = -1;
 		bool sliders_seeded = false;
 		bool aim_applied = false;
 		SDK::UALS_AnimBP_C* aim_instance = nullptr;

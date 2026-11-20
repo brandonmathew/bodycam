@@ -1,17 +1,16 @@
 #include "menu.h"
 
-// Layout shared by the drawing code and the mouse hit-testing, so the
-// clickable rows always match what is on screen.
+// The menu is a table of rows (sections, toggles, sliders) built from the
+// live settings. Drawing and mouse handling both walk the same table, so
+// what is on screen is always what is clickable.
 static constexpr float MenuX = 10.f;
 static constexpr float MenuY = 44.f;
 static constexpr float MenuW = 320.f;
 static constexpr float MenuHeaderH = 40.f;
+static constexpr float MenuSectionH = 22.f;
 static constexpr float MenuRowH = 28.f;
 static constexpr float MenuFooterH = 26.f;
 static constexpr float MenuPad = 16.f;
-static constexpr int MenuToggleCount = 7;
-static constexpr int MenuSliderCount = 3;
-static constexpr int MenuItemCount = MenuToggleCount + MenuSliderCount;
 
 // Palette: dark charcoal panel, one restrained blue accent, soft grays.
 static const SDK::FLinearColor ColPanel{ 0.075f, 0.082f, 0.094f, 0.96f };
@@ -23,6 +22,52 @@ static const SDK::FLinearColor ColMuted{ 0.55f, 0.58f, 0.62f, 1.f };
 static const SDK::FLinearColor ColHover{ 1.f, 1.f, 1.f, 0.06f };
 static const SDK::FLinearColor ColTrackOff{ 0.27f, 0.29f, 0.32f, 1.f };
 static const SDK::FLinearColor ColKnob{ 0.95f, 0.96f, 0.97f, 1.f };
+
+struct menu_row
+{
+	enum class kind { section, toggle, slider } kind;
+	const wchar_t* label;
+	bool* toggle = nullptr;       // toggle rows
+	float* value = nullptr;       // slider rows
+	float min = 0.f, max = 0.f;    // slider rows
+	const wchar_t* format = nullptr;
+	const bool* dim_until = nullptr; // slider label dims while this is false
+};
+
+static int build_rows( features::c_menu& m, menu_row out[ 20 ] )
+{
+	int n = 0;
+	out[ n++ ] = { menu_row::kind::section, L"VISUALS" };
+	out[ n++ ] = { menu_row::kind::toggle, L"ESP", &m.esp };
+	out[ n++ ] = { menu_row::kind::toggle, L"Box", &m.box };
+	out[ n++ ] = { menu_row::kind::toggle, L"Skeleton", &m.skeleton };
+	out[ n++ ] = { menu_row::kind::toggle, L"Health", &m.health };
+	out[ n++ ] = { menu_row::kind::toggle, L"Visibility check", &m.visibility_check };
+	out[ n++ ] = { menu_row::kind::toggle, L"Team check", &m.team_check };
+	out[ n++ ] = { menu_row::kind::slider, L"FOV", nullptr, &m.fov, 0.f, 600.f, L"%.0f" };
+	out[ n++ ] = { menu_row::kind::section, L"AIM" };
+	out[ n++ ] = { menu_row::kind::toggle, L"Aim tuning", &m.aim_tuning };
+	out[ n++ ] = { menu_row::kind::slider, L"ADS in", nullptr, &m.ads_in, 0.f, 1.f, L"%.2f", &m.aim_tuning };
+	out[ n++ ] = { menu_row::kind::slider, L"ADS out", nullptr, &m.ads_out, 0.f, 1.f, L"%.2f", &m.aim_tuning };
+	out[ n++ ] = { menu_row::kind::slider, L"Interp speed", nullptr, &m.interp_speed, 0.f, 50.f, L"%.1f", &m.aim_tuning };
+	out[ n++ ] = { menu_row::kind::toggle, L"Aim move", &m.aim_move };
+	out[ n++ ] = { menu_row::kind::slider, L"Aim speed", nullptr, &m.aim_speed, 0.05f, 1.f, L"%.2f", &m.aim_move };
+	out[ n++ ] = { menu_row::kind::slider, L"Aim smooth", nullptr, &m.aim_smooth, 0.f, 0.25f, L"%.2f", &m.aim_move };
+	return n;
+}
+
+static float row_height( const menu_row& row )
+{
+	return row.kind == menu_row::kind::section ? MenuSectionH : MenuRowH;
+}
+
+static float rows_height( const menu_row rows[ ], int count )
+{
+	float h = 0.f;
+	for ( int i = 0; i < count; i++ )
+		h += row_height( rows[ i ] );
+	return h;
+}
 
 static SDK::APlayerController* get_local_controller( )
 {
@@ -135,7 +180,7 @@ void features::c_menu::handle_input( )
 	if ( !open )
 	{
 		hovered_item = -1;
-		dragging_slider = -1;
+		dragging_row = -1;
 		return;
 	}
 
@@ -149,57 +194,53 @@ void features::c_menu::handle_input( )
 		return;
 	}
 
+	menu_row rows[ 20 ];
+	const int row_count = build_rows( *this, rows );
+
+	// Hover: the toggle/slider row under the mouse (sections don't hover).
 	hovered_item = -1;
 	if ( mouse_x >= MenuX && mouse_x <= MenuX + MenuW )
 	{
-		for ( int i = 0; i < MenuItemCount; i++ )
+		float y = MenuY + MenuHeaderH;
+		for ( int i = 0; i < row_count; i++ )
 		{
-			const float row_y = MenuY + MenuHeaderH + MenuRowH * static_cast< float >( i );
-			if ( mouse_y >= row_y && mouse_y <= row_y + MenuRowH )
+			const float h = row_height( rows[ i ] );
+			if ( rows[ i ].kind != menu_row::kind::section && mouse_y >= y && mouse_y <= y + h )
 			{
 				hovered_item = i;
 				break;
 			}
+			y += h;
 		}
 	}
 
 	// Slider drag: while the button is held, the value follows the mouse.
-	if ( dragging_slider >= 0 )
+	if ( dragging_row >= 0 )
 	{
 		if ( ( GetAsyncKeyState( VK_LBUTTON ) & 0x8000 ) == 0 )
 		{
-			dragging_slider = -1;
+			dragging_row = -1;
 		}
 		else
 		{
+			menu_row& row = rows[ dragging_row ];
 			const float fraction = clampf( ( mouse_x - slider_track_x0( ) ) / ( slider_track_x1( ) - slider_track_x0( ) ), 0.f, 1.f );
-			switch ( dragging_slider )
-			{
-			case 0: ads_in = fraction * 1.f; break;
-			case 1: ads_out = fraction * 1.f; break;
-			case 2: interp_speed = fraction * 50.f; break;
-			}
+			*row.value = row.min + fraction * ( row.max - row.min );
 		}
 	}
 
 	if ( hovered_item >= 0 && key_just_pressed( VK_LBUTTON ) )
 	{
-		if ( hovered_item < MenuToggleCount )
+		menu_row& row = rows[ hovered_item ];
+		if ( row.kind == menu_row::kind::toggle )
 		{
-			switch ( hovered_item )
-			{
-			case 0: esp = !esp; break;
-			case 1: box = !box; break;
-			case 2: skeleton = !skeleton; break;
-			case 3: health = !health; break;
-			case 4: visibility_check = !visibility_check; break;
-			case 5: team_check = !team_check; break;
-			case 6: aim_tuning = !aim_tuning; break;
-			}
+			*row.toggle = !*row.toggle;
 		}
-		else
+		else if ( row.kind == menu_row::kind::slider )
 		{
-			dragging_slider = hovered_item - MenuToggleCount;
+			dragging_row = hovered_item;
+			const float fraction = clampf( ( mouse_x - slider_track_x0( ) ) / ( slider_track_x1( ) - slider_track_x0( ) ), 0.f, 1.f );
+			*row.value = row.min + fraction * ( row.max - row.min );
 		}
 	}
 }
@@ -260,7 +301,9 @@ void features::c_menu::draw_watermark( SDK::UCanvas* canvas )
 
 void features::c_menu::draw_menu( SDK::UCanvas* canvas )
 {
-	const float total_h = MenuHeaderH + MenuRowH * static_cast< float >( MenuItemCount ) + MenuFooterH;
+	menu_row rows[ 20 ];
+	const int row_count = build_rows( *this, rows );
+	const float total_h = MenuHeaderH + rows_height( rows, row_count ) + MenuFooterH;
 
 	// Panel, header band, accent edge, and a hairline border.
 	fill_rect( canvas, MenuX, MenuY, MenuW, total_h, ColPanel );
@@ -274,57 +317,45 @@ void features::c_menu::draw_menu( SDK::UCanvas* canvas )
 	draw_text( canvas, L"BODYCAM", MenuX + MenuPad + 4.f, MenuY + 13.f, ColText );
 	draw_text( canvas, L"MENU", MenuX + MenuW - MenuPad - 30.f, MenuY + 13.f, ColMuted );
 
-	struct item { const wchar_t* name; bool* value; };
-	const item items[ MenuToggleCount ] = {
-		{ L"ESP",              &esp },
-		{ L"Box",              &box },
-		{ L"Skeleton",         &skeleton },
-		{ L"Health",           &health },
-		{ L"Visibility check", &visibility_check },
-		{ L"Team check",       &team_check },
-		{ L"Aim tuning",       &aim_tuning },
-	};
-
-	for ( int i = 0; i < MenuToggleCount; i++ )
+	float y = MenuY + MenuHeaderH;
+	for ( int i = 0; i < row_count; i++ )
 	{
-		const float row_y = MenuY + MenuHeaderH + MenuRowH * static_cast< float >( i );
+		const menu_row& row = rows[ i ];
 
-		if ( i == hovered_item )
-			fill_rect( canvas, MenuX + 6.f, row_y + 2.f, MenuW - 12.f, MenuRowH - 4.f, ColHover );
+		if ( row.kind == menu_row::kind::section )
+		{
+			draw_text( canvas, row.label, MenuX + MenuPad + 4.f, y + 5.f, ColMuted );
+			fill_rect( canvas, MenuX + MenuPad, y + MenuSectionH - 1.f, MenuW - MenuPad * 2.f, 1.f, ColBorder );
+			y += MenuSectionH;
+			continue;
+		}
 
-		draw_text( canvas, items[ i ].name, MenuX + MenuPad + 4.f, row_y + 8.f, ColText );
-		draw_toggle( canvas, MenuX + MenuW - MenuPad - 36.f, row_y + 5.f, *items[ i ].value );
-	}
+		if ( i == hovered_item || i == dragging_row )
+			fill_rect( canvas, MenuX + 6.f, y + 2.f, MenuW - 12.f, MenuRowH - 4.f, ColHover );
 
-	// Slider rows: label, track with accent fill and knob, value at the
-	// right. Labels dim while Aim tuning is off (values apply when on).
-	struct slider { const wchar_t* name; float value; float min; float max; const wchar_t* format; };
-	const slider sliders[ MenuSliderCount ] = {
-		{ L"ADS in",       ads_in,       0.f, 1.f,  L"%.2f" },
-		{ L"ADS out",      ads_out,      0.f, 1.f,  L"%.2f" },
-		{ L"Interp speed", interp_speed, 0.f, 50.f, L"%.1f" },
-	};
+		if ( row.kind == menu_row::kind::toggle )
+		{
+			draw_text( canvas, row.label, MenuX + MenuPad + 4.f, y + 8.f, ColText );
+			draw_toggle( canvas, MenuX + MenuW - MenuPad - 36.f, y + 5.f, *row.toggle );
+		}
+		else // slider
+		{
+			// Label dims while the feature it belongs to is switched off.
+			const SDK::FLinearColor& label_color = ( !row.dim_until || *row.dim_until ) ? ColText : ColMuted;
+			draw_text( canvas, row.label, MenuX + MenuPad + 4.f, y + 8.f, label_color );
 
-	for ( int i = 0; i < MenuSliderCount; i++ )
-	{
-		const int row = MenuToggleCount + i;
-		const float row_y = MenuY + MenuHeaderH + MenuRowH * static_cast< float >( row );
+			const float fraction = ( *row.value - row.min ) / ( row.max - row.min );
+			const float track_w = slider_track_x1( ) - slider_track_x0( );
+			fill_rect( canvas, slider_track_x0( ), y + 11.f, track_w, 6.f, ColTrackOff );
+			fill_rect( canvas, slider_track_x0( ), y + 11.f, track_w * fraction, 6.f, ColAccent );
+			fill_rect( canvas, slider_track_x0( ) + track_w * fraction - 4.f, y + 7.f, 8.f, 14.f, ColKnob );
 
-		if ( row == hovered_item || dragging_slider == i )
-			fill_rect( canvas, MenuX + 6.f, row_y + 2.f, MenuW - 12.f, MenuRowH - 4.f, ColHover );
+			wchar_t value_text[ 16 ] = { };
+			swprintf( value_text, 16, row.format, *row.value );
+			draw_text( canvas, value_text, MenuX + MenuW - MenuPad - 32.f, y + 8.f, label_color );
+		}
 
-		const SDK::FLinearColor& label_color = aim_tuning ? ColText : ColMuted;
-		draw_text( canvas, sliders[ i ].name, MenuX + MenuPad + 4.f, row_y + 8.f, label_color );
-
-		const float fraction = ( sliders[ i ].value - sliders[ i ].min ) / ( sliders[ i ].max - sliders[ i ].min );
-		const float track_w = slider_track_x1( ) - slider_track_x0( );
-		fill_rect( canvas, slider_track_x0( ), row_y + 11.f, track_w, 6.f, ColTrackOff );
-		fill_rect( canvas, slider_track_x0( ), row_y + 11.f, track_w * fraction, 6.f, ColAccent );
-		fill_rect( canvas, slider_track_x0( ) + track_w * fraction - 4.f, row_y + 7.f, 8.f, 14.f, ColKnob );
-
-		wchar_t value_text[ 16 ] = { };
-		swprintf( value_text, 16, sliders[ i ].format, sliders[ i ].value );
-		draw_text( canvas, value_text, MenuX + MenuW - MenuPad - 32.f, row_y + 8.f, label_color );
+		y += MenuRowH;
 	}
 
 	// Footer with the two keys that matter.
